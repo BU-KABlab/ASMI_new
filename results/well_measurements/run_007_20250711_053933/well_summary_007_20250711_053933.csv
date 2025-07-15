@@ -1,0 +1,11 @@
+Test_Time,2025-07-11 05:41:03
+Force_Limit(N),45.0
+Target_Z(mm),-15.000
+
+Well,Force_Exceeded,Stop_Z(mm),Max_Force(N),Samples,Filename
+A6,True,-14.975,65.959,91,results/well_measurements/run_007_20250711_053933/well_A6_20250711_053955.csv
+B6,True,-14.561,65.967,89,results/well_measurements/run_007_20250711_053933/well_B6_20250711_054009.csv
+C6,True,-14.816,65.965,90,results/well_measurements/run_007_20250711_053933/well_C6_20250711_054023.csv
+C5,False,N/A,34.567,91,results/well_measurements/run_007_20250711_053933/well_C5_20250711_054036.csv
+B5,False,N/A,13.619,91,results/well_measurements/run_007_20250711_053933/well_B5_20250711_054049.csv
+A5,False,N/A,13.293,91,results/well_measurements/run_007_20250711_053933/well_A5_20250711_054103.csv

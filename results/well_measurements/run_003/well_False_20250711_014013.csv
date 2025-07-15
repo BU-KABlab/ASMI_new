@@ -1,0 +1,11 @@
+Test_Time,2025-07-11 01:40:13
+Force_Limit(N),45.0
+Target_Z(mm),-15.000
+
+Well,Force_Exceeded,Stop_Z(mm),Max_Force(N),Samples,Filename
+A6,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
+B6,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
+C6,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
+C5,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
+B5,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
+A5,False,N/A,0.000,0,ERROR: device reports readiness to read but returned no data (device disconnected or multiple access on port?)
