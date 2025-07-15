@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-Test script for force monitoring functionality
-Run this to test force vs Z position monitoring
+Force monitoring module for ASMI system
+Provides functionality to test force monitoring at multiple wells with force limits
 """
 
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
 import time
 import csv
 import os
 from datetime import datetime
+from .CNCController import CNCController
+from .ForceSensor import ForceSensor
+
 
 def get_and_increment_run_count(run_count_file='run_count.txt'):
+    """Get and increment the run count from file"""
     if not os.path.exists(run_count_file):
         with open(run_count_file, 'w') as f:
             f.write('1')
@@ -24,14 +26,27 @@ def get_and_increment_run_count(run_count_file='run_count.txt'):
         f.truncate()
     return count
 
+
 def test_well_force_monitoring(cnc, force_sensor, well="A1", target_z=-10.0, period_ms=50, filename=None, feedrate=1000):
     """
     Test force monitoring at a specific well location.
+    
+    Args:
+        cnc: CNCController object
+        force_sensor: ForceSensor object
+        well: Well identifier (e.g., "A1")
+        target_z: Target Z position in mm
+        period_ms: Sampling period in milliseconds
+        filename: Output filename (auto-generated if None)
+        feedrate: Movement feedrate
+        
+    Returns:
+        List of measurements [(timestamp, z_pos, force), ...]
     """
     print(f"🧪 Testing force monitoring at well {well}")
     print(f"📊 Moving to well {well} and monitoring force at Z={target_z:.3f}mm")
     
-    # Generate filename if not provided (default is results/force_measurements/well_A1_timestamp.csv)
+    # Generate filename if not provided
     if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"results/force_measurements/well_{well}_{timestamp}.csv"
@@ -39,9 +54,10 @@ def test_well_force_monitoring(cnc, force_sensor, well="A1", target_z=-10.0, per
     # Ensure results directory exists
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     
-    # Move to well A1 at safety height first
+    # Move to well at safety height first
     print(f"📍 Moving to well {well}...")
-    cnc.move_to_well("A", "1", z=0)  # Move to A1 at safety height
+    col, row = well[0], well[1:]
+    cnc.move_to_well(col, row, z=0)
     
     # Get current position
     current_pos = cnc.get_current_position()
@@ -54,7 +70,7 @@ def test_well_force_monitoring(cnc, force_sensor, well="A1", target_z=-10.0, per
     # Move to target Z with force monitoring
     print(f"📊 Moving to Z={target_z:.3f} with force monitoring...")
     measurements = cnc.move_to_z_with_force_monitoring(
-        target_z, force_sensor, period_ms, filename=None, feedrate=feedrate # Don't save yet
+        target_z, force_sensor, period_ms, filename=None, feedrate=feedrate
     )
     
     # Get test timestamp
@@ -93,6 +109,9 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
         force_limit: Force limit in N (absolute value)
         period_ms: Sampling period in milliseconds
         feedrate: Movement feedrate
+        
+    Returns:
+        List of result dictionaries with test outcomes
     """
     if wells is None:
         wells = ["A1"]  # Default wells
@@ -151,11 +170,11 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                 print(f"> Sending: {gcode}")
                 cnc.ser.write((gcode + '\n').encode())
                 
-                # Monitor force and position during downward movement with native timing
+                # Monitor force and position during downward movement
                 force_exceeded = False
                 stop_z = None
                 z_start = current_pos[2]
-                sampling_interval = period_ms / 1000.0  # Convert to seconds
+                sampling_interval = period_ms / 1000.0
                 last_sample_time = start_time
                 
                 stuck_z = None
@@ -183,7 +202,7 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                             stuck_time = current_time
                         elif stuck_time is not None and (current_time - stuck_time > stuck_threshold):
                             print(f"⚠️ Z position stuck at {z_current:.3f} for >{stuck_threshold}s. Moving up to Z=0.")
-                            break  # Exit loop to trigger return to Z=0
+                            break
                         
                         # Record measurement
                         timestamp = current_time - start_time
@@ -195,10 +214,10 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                             force_exceeded = True
                             stop_z = z_current
                             
-                            # Emergency stop the movement - IMPROVED SEQUENCE
+                            # Emergency stop the movement
                             print(f"🛑 Emergency stop - sending feed hold")
-                            cnc.ser.write(b'!')  # Feed hold
-                            time.sleep(0.2)  # Wait longer for hold to complete
+                            cnc.ser.write(b'!')
+                            time.sleep(0.2)
                             
                             # Check machine status
                             cnc.ser.write(b'?\n')
@@ -209,8 +228,8 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                             # If machine is in hold state, unlock it
                             if "Hold" in status:
                                 print(f"🔓 Unlocking machine...")
-                                cnc.ser.write(b'$X\n')  # Unlock
-                                time.sleep(0.3)  # Wait longer for unlock to complete
+                                cnc.ser.write(b'$X\n')
+                                time.sleep(0.3)
                                 
                                 # Verify unlock worked
                                 cnc.ser.write(b'?\n')
@@ -236,7 +255,7 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                     # Small sleep to prevent busy waiting
                     time.sleep(0.001)
                 
-                # Now move back to Z=0 with force monitoring - IMPROVED
+                # Now move back to Z=0 with force monitoring
                 print(f"📈 Moving back to Z=0 with force monitoring...")
                 
                 # Ensure machine is not in hold state before moving
@@ -267,7 +286,7 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
                 print(f"> Sending: {gcode_up}")
                 cnc.ser.write((gcode_up + '\n').encode())
                 
-                # Monitor force during upward movement with native timing
+                # Monitor force during upward movement
                 while True:
                     current_time = time.time()
                     
@@ -394,100 +413,21 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
     return results
 
 
-def test_force_cycle(cnc, force_sensor, target_z, period_ms=50, filename=None, verbose=True):
+def run_force_monitoring_test(wells_to_test, target_z=-15.0, force_limit=45.0, period_ms=20, feedrate=1000):
     """
-    Simple function to test force monitoring during a complete down-up cycle.
-    Keeps the CNCController class simple by handling the cycle logic here.
+    Main function to run force monitoring test on specified wells.
+    
+    Args:
+        wells_to_test: List of wells to test (e.g., ["A1", "A2", "B1", "B2"])
+        target_z: Target Z position for each well (default: -15.0 mm)
+        force_limit: Force limit in N (default: 45.0 N)
+        period_ms: Sampling period in milliseconds (default: 20 ms)
+        feedrate: Movement feedrate (default: 1000)
+        
+    Returns:
+        List of result dictionaries with test outcomes
     """
-    freq = 1000.0 / period_ms
-    print(f"📊 Testing force cycle: Z=0 → Z={target_z:.3f} → Z=0 every {period_ms}ms ({freq:.1f} Hz)")
-    
-    # Generate filename if not provided
-    if filename is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"results/force_measurements/force_cycle_{timestamp}.csv"
-    
-    # Ensure results directory exists
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    
-    # Get starting position
-    start_pos = cnc.get_current_position()
-    if not start_pos:
-        print("❌ Could not get starting position")
-        return []
-    
-    z_start = start_pos[2]
-    print(f"📍 Starting from Z={z_start:.3f}")
-    
-    # Initialize data collection
-    measurements = []
-    start_time = time.time()
-    
-    # Check force sensor connection
-    if not force_sensor.is_connected():
-        print("❌ Force sensor not connected")
-        return []
-    
-    # Phase 1: Move down with monitoring
-    print(f"📉 Phase 1: Moving down to Z={target_z:.3f}")
-    down_measurements = cnc.move_to_z_with_force_monitoring(
-        target_z, force_sensor, period_ms, filename=None  # Don't save yet
-    )
-    measurements.extend(down_measurements)
-    
-    # Phase 2: Move back up with monitoring
-    print(f"📈 Phase 2: Moving back up to Z={z_start:.3f}")
-    up_measurements = cnc.move_to_z_with_force_monitoring(
-        z_start, force_sensor, period_ms, filename=None  # Don't save yet
-    )
-    measurements.extend(up_measurements)
-    
-    # Get test timestamp
-    test_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Save complete cycle data
-    with open(filename, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Test_Time', test_timestamp])
-        writer.writerow(['Target_Z(mm)', f"{target_z:.3f}"])
-        writer.writerow(['Sampling_Period(ms)', f"{period_ms}"])
-        writer.writerow([])  # Empty row for separation
-        writer.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Force(N)', 'Phase'])
-        
-        # Track which phase we're in
-        current_phase = "Moving_Down"
-        down_measurements_count = len(down_measurements)
-        
-        for i, (timestamp, z_pos, force_val) in enumerate(measurements):
-            # Determine phase based on measurement index and Z position
-            if i < down_measurements_count:
-                # First part: down movement
-                if z_pos <= target_z + 0.1:  # At or near target
-                    current_phase = "At_Target"
-                elif z_pos >= z_start - 0.1:  # At or near original
-                    current_phase = "At_Original"
-                else:  # Moving down
-                    current_phase = "Moving_Down"
-            else:
-                # Second part: up movement
-                if z_pos >= z_start - 0.1:  # At or near original
-                    current_phase = "At_Original"
-                elif z_pos <= target_z + 0.1:  # At or near target
-                    current_phase = "At_Target"
-                else:  # Moving up
-                    current_phase = "Moving_Up"
-            
-            writer.writerow([f"{timestamp:.3f}", f"{z_pos:.3f}", f"{force_val:.3f}", current_phase])
-    
-    print(f"💾 Saved {len(measurements)} measurements to {filename}")
-    print(f"✅ Complete cycle finished. Final Z={z_start:.3f}")
-    
-    return measurements
-
-
-def test_force_monitoring(period_ms=50):
-    """Test the force monitoring functionality"""
-    print("🧪 Testing Force Monitoring Functionality")
+    print("🧪 Starting Force Monitoring Test")
     print("=" * 50)
     
     try:
@@ -498,47 +438,34 @@ def test_force_monitoring(period_ms=50):
         
         if not force_sensor.is_connected():
             print("❌ Force sensor not connected. Please check USB connection.")
-            return False
+            return []
         
         print("✅ Components initialized successfully")
         
-    
-        # Test: Well A1 force monitoring
-        print("\n🔄 Test 4: Well A1 force monitoring")
-        print("⚠️  Make sure there's nothing in the way!")
+        # Home the machine
+        print("🏠 Homing machine...")
+        cnc.home()
         
-        # Ask for confirmation
-        response = input("Continue with well A1 test? (y/n): ").strip().lower()
-        if response != 'y':
-            print("❌ Test cancelled")
-            return False
-        
-        # Run well A1 force monitoring
-        measurements = test_well_force_monitoring(
-            cnc, force_sensor, well="A1", target_z=-10.0,
+        # Run the well loop test
+        results = test_well_loop_with_force_limit(
+            cnc, force_sensor,
+            wells=wells_to_test,
+            target_z=target_z,
+            force_limit=force_limit,
             period_ms=period_ms,
-            filename="results/force_measurements/test_well_A1.csv"
+            feedrate=feedrate
         )
         
-        if measurements:
-            print(f"✅ Test completed! Recorded {len(measurements)} measurements")
-            print("📁 Data saved to: results/force_measurements/test_force_cycle.csv")
-            
-            # Show summary
-            forces = [m[2] for m in measurements]
-            z_positions = [m[1] for m in measurements]
-            print(f"📊 Force range: {min(forces):.3f} to {max(forces):.3f} N")
-            print(f"📊 Z range: {min(z_positions):.3f} to {max(z_positions):.3f} mm")
-        else:
-            print("❌ No measurements recorded")
-            return False
+        # Return to home position
+        print("🏠 Returning to home position...")
+        cnc.home()
         
-        print("\n🎉 All tests completed successfully!")
-        return True
+        print("\n🎉 Force monitoring test completed successfully!")
+        return results
         
     except Exception as e:
         print(f"❌ Error during testing: {e}")
-        return False
+        return []
     
     finally:
         # Cleanup
@@ -551,18 +478,14 @@ def test_force_monitoring(period_ms=50):
 
 
 if __name__ == "__main__":
-    force_sensor = ForceSensor()
-    cnc = CNCController()
-    cnc.home()
-    
-    # Test well loop with force limit
+    # Example usage
     wells_to_test = ["A6", "B6", "C6", "C5", "B5", "A5"]
-    test_well_loop_with_force_limit(
-        cnc, force_sensor, 
-        wells=wells_to_test,
-        target_z=-15.0, 
-        force_limit=45.0, 
-        period_ms=10, 
+    results = run_force_monitoring_test(
+        wells_to_test=wells_to_test,
+        target_z=-15.0,
+        force_limit=45.0,
+        period_ms=10,
         feedrate=200
     )
-    cnc.home()
+    
+    print(f"\n📊 Test completed with {len(results)} wells tested") 

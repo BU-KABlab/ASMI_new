@@ -11,8 +11,8 @@ BAUD_RATE = 115200
 GRBL_PORT = '/dev/cu.usbserial-130'
 
 # === WELL PLATE GEOMETRY ===
-A1_X = 98.5
-A1_Y = 48
+A1_X = 97.0
+A1_Y = 58.5
 Z_INITIAL = 0 # safety height
 WELL_SPACING = 9.0
 ROWS = [str(i) for i in range(1, 13)]
