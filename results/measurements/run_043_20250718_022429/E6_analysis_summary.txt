@@ -1,0 +1,11 @@
+ASMI Analysis Results for Well E6
+==================================================
+Elastic Modulus: 5661571 Pa
+Uncertainty: ±186329 Pa
+Poisson's Ratio: 0.3
+Sample Height: 8.4 mm
+Fit Quality (R²): 0.983
+Depth Range: 0.00-1.76 mm
+Fit Parameters: A=11.935, d0=-0.181
+Contact Point: Z=-11.023 mm, Force=0.002 N
+Analysis Date: 2025-07-18 02:27:27

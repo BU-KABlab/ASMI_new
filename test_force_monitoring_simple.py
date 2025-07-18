@@ -44,13 +44,13 @@ def run_test(wells_to_test, target_z, force_limit, period_ms, feedrate):
 if __name__ == "__main__":
     
     # Optional: Customize test parameters
-    target_z = -14.0      # Target Z position in mm
+    target_z = -15.0      # Target Z position in mm
     force_limit = 45.0    # Force limit in N
     period_ms = 10        # Sampling period in milliseconds
     feedrate = 200        # Movement feedrate
     
     # Define the wells you want to test
-    wells_to_test = ["A1"]
+    wells_to_test = ["C6"]
     
     run_test(wells_to_test, target_z, force_limit, period_ms, feedrate)
     

@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well D7
+==================================================
+Elastic Modulus: 4982502 Pa
+Uncertainty: ±70594 Pa
+Poisson's Ratio: 0.5
+Sample Height: 7.6 mm
+Fit Quality (R²): 0.998
+Depth Range: 0.00-1.18 mm
+Fit Parameters: A=10.504, d0=0.232
+Analysis Date: 2025-07-18 01:53:56

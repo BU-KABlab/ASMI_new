@@ -1,0 +1,11 @@
+ASMI Analysis Results for Well G3
+==================================================
+Elastic Modulus: 5624727 Pa
+Uncertainty: ±192391 Pa
+Poisson's Ratio: 0.3
+Sample Height: 9.4 mm
+Fit Quality (R²): 0.982
+Depth Range: 0.00-1.71 mm
+Fit Parameters: A=11.858, d0=-0.231
+Contact Point: Z=-10.013 mm, Force=0.001 N
+Analysis Date: 2025-07-18 02:28:43

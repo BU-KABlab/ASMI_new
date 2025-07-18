@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well F4
+==================================================
+Elastic Modulus: 5423147 Pa
+Uncertainty: ±107963 Pa
+Poisson's Ratio: 0.5
+Sample Height: 9.3 mm
+Fit Quality (R²): 0.996
+Depth Range: 0.00-2.44 mm
+Fit Parameters: A=11.433, d0=1.212
+Analysis Date: 2025-07-18 00:36:03

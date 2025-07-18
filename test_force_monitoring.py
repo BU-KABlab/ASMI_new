@@ -11,7 +11,7 @@ import csv
 import os
 from datetime import datetime
 
-def get_and_increment_run_count(run_count_file='run_count.txt'):
+def get_and_increment_run_count(run_count_file='src/run_count.txt'):
     if not os.path.exists(run_count_file):
         with open(run_count_file, 'w') as f:
             f.write('1')
@@ -103,7 +103,7 @@ def test_well_loop_with_force_limit(cnc, force_sensor, wells=None, target_z=-15.
     
     run_count = get_and_increment_run_count()
     run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_folder = f"results/well_measurements/run_{run_count:03d}_{run_date}"
+    run_folder = f"results/measurements/run_{run_count:03d}_{run_date}"
     os.makedirs(run_folder, exist_ok=True)
     summary_filename = os.path.join(run_folder, f"well_summary_{run_count:03d}_{run_date}.csv")
     

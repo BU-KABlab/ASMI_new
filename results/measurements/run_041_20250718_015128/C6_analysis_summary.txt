@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well C6
+==================================================
+Elastic Modulus: 3329393 Pa
+Uncertainty: ±35016 Pa
+Poisson's Ratio: 0.5
+Sample Height: 9.3 mm
+Fit Quality (R²): 0.998
+Depth Range: 0.00-2.48 mm
+Fit Parameters: A=7.019, d0=0.495
+Analysis Date: 2025-07-18 01:52:22

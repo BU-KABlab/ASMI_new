@@ -11,8 +11,8 @@ BAUD_RATE = 115200
 GRBL_PORT = '/dev/cu.usbserial-130'
 
 # === WELL PLATE GEOMETRY ===
-A1_X = 97.0
-A1_Y = 58.5
+A1_X = 99.0
+A1_Y = 48.5
 Z_INITIAL = 0 # safety height
 WELL_SPACING = 9.0
 ROWS = [str(i) for i in range(1, 13)]
@@ -47,34 +47,63 @@ class CNCController:
             print("⚠️ CNC serial port already closed.")
 
 
-    def wait_for_idle(self):
+    def wait_for_idle(self, timeout=10.0):
+        """Wait for CNC to become idle with timeout"""
         idle_counter = 0
-        while True:
-            self.ser.reset_input_buffer()
-            self.ser.write(b'?\n')
-            status = self.ser.readline().decode('utf-8').strip()
-            if "Idle" in status:
-                idle_counter += 1
-            if idle_counter > 10:
-                break
-            time.sleep(0.1)
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                self.ser.reset_input_buffer()
+                self.ser.write(b'?\n')
+                status = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                
+                if "Idle" in status:
+                    idle_counter += 1
+                    if idle_counter >= 3:  # Reduced from 10 to 3 for faster response
+                        print("✅ CNC is idle")
+                        return True
+                elif "Alarm" in status or "Error" in status:
+                    print(f"⚠️ CNC in error state: {status}")
+                    return False
+                elif "Run" in status:
+                    idle_counter = 0  # Reset counter if still running
+                    
+                time.sleep(0.1)
+                
+            except Exception as e:
+                print(f"⚠️ Error checking CNC status: {e}")
+                time.sleep(0.1)
+        
+        print(f"⚠️ Timeout waiting for CNC to become idle after {timeout}s")
+        return False
 
 
-    def send_gcode(self, command):
+    def send_gcode(self, command, wait_for_response=True):
         if not self.ser or not self.ser.is_open:
             raise serial.SerialException("❌ Serial port is not open. Cannot send G-code.")
         print(f"> Sending: {command}")
         self.ser.write((command + '\n').encode())
+        
+        if not wait_for_response:
+            return True
+            
         if command.startswith("G92") or command.startswith("M") or command.startswith("$"):
+            # Wait for immediate response for these commands
             while True:
                 response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 if response:
                     print(f"< Response: {response}")
                     break
         else:
-            self.wait_for_idle()
+            # For movement commands, wait for idle
+            if not self.wait_for_idle():
+                print("⚠️ CNC did not become idle - movement may have failed")
+                return False
             response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-            print(f"< Response: {response}")
+            if response:
+                print(f"< Response: {response}")
+        return True
 
 
     def move_to_well(self, col: str, row: str, z: float = Z_INITIAL):
@@ -105,26 +134,74 @@ class CNCController:
         self.save_position()
 
 
-    def move_to_z(self, z: float, feedrate: float = FEEDRATE):
+    def move_to_z(self, z: float, feedrate: float = FEEDRATE, wait_for_idle: bool = True):
         "Move to a designated absolute Z position."
         gcode = f"G01 Z{z:.3f} F{feedrate}"
-        self.send_gcode(gcode)
-        self.wait_for_idle()
-        print(f"✅ Moved to Z={z:.3f}")
         
-        # Save position after movement
-        self.save_position()
+        if wait_for_idle:
+            success = self.send_gcode(gcode, wait_for_response=True)
+            if success:
+                self.wait_for_idle()
+                print(f"✅ Moved to Z={z:.3f}")
+            # Save position after movement
+            if success:
+                self.save_position()
+        else:
+            # Fast version - no waiting at all
+            self.send_gcode(gcode, wait_for_response=False)
+            print(f"🔄 Moving to Z={z:.3f} (no wait)")
 
 
-    def home(self, zero_after: bool = True):
+    def home(self, zero_after: bool = True, timeout: float = 30.0):
+        """Home the CNC machine with timeout"""
         print("🏠 Homing CNC...")
         
-        self.send_gcode("$H")
-        if zero_after:
-            self.send_gcode("G92 X0 Y0 Z0")  # Zero after homing
-            print("✅ CNC homed and zeroed.")
-        else:
-            print("✅ CNC homed.")
+        try:
+            # Send homing command
+            print("> Sending: $H")
+            self.ser.write(b'$H\n')
+            
+            # Wait for homing to complete with timeout
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    self.ser.reset_input_buffer()
+                    self.ser.write(b'?\n')
+                    status = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    
+                    if "Idle" in status:
+                        print("✅ Homing completed")
+                        break
+                    elif "Alarm" in status:
+                        print(f"⚠️ CNC in alarm state during homing: {status}")
+                        return False
+                    elif "Run" in status:
+                        print("🔄 Homing in progress...")
+                        
+                    time.sleep(0.5)  # Check every 500ms
+                    
+                except Exception as e:
+                    print(f"⚠️ Error during homing: {e}")
+                    time.sleep(0.5)
+            
+            if time.time() - start_time >= timeout:
+                print(f"⚠️ Homing timeout after {timeout}s")
+                return False
+            
+            # Zero the machine if requested
+            if zero_after:
+                print("> Sending: G92 X0 Y0 Z0")
+                self.ser.write(b'G92 X0 Y0 Z0\n')
+                time.sleep(0.5)  # Brief wait for zero command
+                print("✅ CNC homed and zeroed.")
+            else:
+                print("✅ CNC homed.")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error during homing: {e}")
+            return False
 
 
     def reset_grbl(self):
@@ -135,16 +212,39 @@ class CNCController:
         self.ser.write(b'$H\n')  # Home
         time.sleep(2)
         print("✅ GRBL reset complete")
+    
+    def emergency_stop(self):
+        """Emergency stop - send stop command without waiting"""
+        print("🛑 Emergency stop!")
+        try:
+            self.ser.write(b'\x18\n')  # Ctrl+X (soft reset)
+            print("✅ Emergency stop sent")
+        except Exception as e:
+            print(f"❌ Error sending emergency stop: {e}")
+    
+    def unlock(self):
+        """Unlock the CNC without homing"""
+        print("🔓 Unlocking CNC...")
+        try:
+            self.ser.write(b'$X\n')
+            time.sleep(0.5)
+            print("✅ CNC unlocked")
+            return True
+        except Exception as e:
+            print(f"❌ Error unlocking CNC: {e}")
+            return False
 
 
     def get_current_position(self):
         "Get the current machine position from GRBL."
+        start_time = time.time()
         self.ser.reset_input_buffer()
         self.ser.write(b'?\n')
-        time.sleep(0.1)
+        # time.sleep(0.1)
         response = self.ser.readline().decode('utf-8', errors='ignore').strip()
         print(f"📡 Raw position response: {response}")
-        
+        end_time = time.time()
+        print(f"Time taken to get current position: {end_time - start_time} seconds")
         # Check for reset message
         if "Reset to continue" in response:
             print("⚠️ GRBL needs reset. Attempting to reset...")
@@ -160,7 +260,10 @@ class CNCController:
                 mpos_section = response.split("MPos:")[1].split("|")[0]
                 x, y, z = map(float, mpos_section.split(","))
                 print(f"✅ Machine position: X={x}, Y={y}, Z={z}")
-                return x, y, z
+                end_time = time.time()
+                print(f"Time taken to get current position: {end_time - start_time} seconds")
+                return [x, y, z]
+            
             except Exception as e:
                 print(f"⚠️ Failed to parse position: {e}")
                 return None
@@ -174,15 +277,10 @@ class CNCController:
         current_pos = self.get_current_position()
         if current_pos:
             x, y, z = current_pos
-            # Save to both root directory (for compatibility) and results folder
-            with open("last_position.csv", "w", newline="") as f:
-                csv.writer(f).writerow([x, y, z])
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Also save to results folder with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_filename = f"results/calibration/position_{timestamp}.csv"
-            os.makedirs(os.path.dirname(results_filename), exist_ok=True)
-            with open(results_filename, "w", newline="") as f:
+            # Save to src folder with timestamp format
+            with open("src/last_position.csv", "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(['Timestamp', 'X(mm)', 'Y(mm)', 'Z(mm)'])
                 writer.writerow([timestamp, f"{x:.3f}", f"{y:.3f}", f"{z:.3f}"])
@@ -203,8 +301,14 @@ class CNCController:
         x, y, z = current_pos
         
         try:
-            with open("last_position.csv", "r") as f:
-                saved_x, saved_y, saved_z = map(float, csv.reader(f).__next__())
+            with open("src/last_position.csv", "r") as f:
+                reader = csv.reader(f)
+                next(reader)  # Skip header row
+                row = next(reader)  # Get data row
+                if len(row) >= 4:  # New format with timestamp
+                    saved_x, saved_y, saved_z = float(row[1]), float(row[2]), float(row[3])
+                else:  # Old format without timestamp
+                    saved_x, saved_y, saved_z = float(row[0]), float(row[1]), float(row[2])
             
             # If saved position is (0,0,0), machine was properly homed last time
             if saved_x == 0 and saved_y == 0 and saved_z == 0:
@@ -304,7 +408,7 @@ class CNCController:
                     print(f"📊 Sample {len(measurements)}, t={timestamp:.2f}s, Z={z_current:.3f}mm, F={force:.3f}N")
                 
                 # Check if target is reached
-                if abs(z_current - z_target) < 0.1:
+                if abs(float(z_current) - z_target) < 0.1:
                     if not target_reached:
                         target_reached = True
                         print(f"🎯 Target Z={z_target:.3f} reached! Continuing monitoring...")
@@ -442,7 +546,7 @@ class CNCController:
         """
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"results/well_measurements/well_{well}_{timestamp}.csv"
+            filename = f"results/measurements/well_{well}_{timestamp}.csv"
         
         # Ensure results directory exists
         os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -455,3 +559,20 @@ class CNCController:
         
         print(f"💾 Well measurement saved to {filename}")
         return filename
+
+
+    def move_to_pickup_position(self, y_position: float = 140.0, feedrate: float = FEEDRATE):
+        """Move to a Y position that is convenient for the robot arm to pick up the well."""
+        # Always check current Z position and move to safety height first
+        current_pos = self.get_current_position()
+        if not current_pos:
+            print("❌ Could not get current position")
+            return
+        z_current = current_pos[2]
+        if z_current != Z_INITIAL:
+            self.move_to_z(Z_INITIAL)
+            
+        print(f"📍 Moving to pickup position: Y={y_position:.3f}")
+        gcode = f"G01 Y{y_position:.3f} F{feedrate}"
+        self.send_gcode(gcode)
+        self.save_position()

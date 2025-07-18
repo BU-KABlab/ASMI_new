@@ -1,0 +1,11 @@
+ASMI Analysis Results for Well D5
+==================================================
+Elastic Modulus: 3606061 Pa
+Uncertainty: ±69607 Pa
+Poisson's Ratio: 0.3
+Sample Height: 6.6 mm
+Fit Quality (R²): 0.993
+Depth Range: 0.00-1.98 mm
+Fit Parameters: A=7.602, d0=-0.208
+Contact Point: Z=-12.759 mm, Force=-2.122 N
+Analysis Date: 2025-07-18 03:01:56

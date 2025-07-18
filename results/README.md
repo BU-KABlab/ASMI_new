@@ -7,7 +7,7 @@ This folder contains all measurement data and analysis results from the ASMI sys
 ```
 results/
 ├── force_measurements/     # Force vs Z position data
-├── well_measurements/      # Measurements at specific wells
+├── measurements/           # Measurements at specific wells
 │   ├── run_001/           # Individual test runs
 │   ├── run_002/
 │   └── ...
@@ -64,7 +64,7 @@ Contains results for all wells in a test run:
 
 ## Force Monitoring Tests
 
-The force monitoring system generates organized data in the `well_measurements/` folder:
+The force monitoring system generates organized data in the `measurements/` folder:
 
 ### Test Run Structure
 Each test run creates a folder like `run_007_20250711_053933/` containing:

@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well G4
+==================================================
+Elastic Modulus: 477658 Pa
+Uncertainty: ±81337 Pa
+Poisson's Ratio: 0.5
+Sample Height: 8.6 mm
+Fit Quality (R²): 0.805
+Depth Range: 0.00-2.50 mm
+Fit Parameters: A=1.115, d0=0.931
+Analysis Date: 2025-07-17 23:23:12

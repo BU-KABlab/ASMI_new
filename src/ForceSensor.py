@@ -74,96 +74,47 @@ class ForceSensor:
         if not self.device or not self.sensor:
             return 0.0
             
+        start_time = time.time()
         self.device.start()
         value = 0.0
         if self.device.read():
             value = self.sensor.values[0]
-            self.sensor.clear()
+            self.sensor.clear() 
         self.device.stop()
-        print(f"📊 Force reading: {value:.3f} N")
+        end_time = time.time()
+        print(f"📊 Force reading: {value:.3f} N, Time taken: {end_time - start_time} seconds")
         return value
-
-
-    def get_baseline_force(self, samples: int = 5) -> Tuple[float, float]:
+    
+    
+    def get_baseline_force(self, samples: int = 10) -> Tuple[float, float]:
         """Get baseline force reading with standard deviation.
         Return: tuple of average force reading, standard deviation"""
-        if not self.is_connected():
-            print("⚠️ Sensor not connected")
-            return 0.0, 0.0
-            
-        if not self.device or not self.sensor:
-            return 0.0, 0.0
-            
-        print(f"📈 Taking {samples} baseline measurements...")
         measurements = []
-        self.device.start()
         for i in range(samples):
-            if self.device.read():
-                measurements.append(self.sensor.values[0])
-                self.sensor.clear()
-            time.sleep(0.05)
-        self.device.stop()
-        
-        if not measurements:
-            print("❌ No measurements collected")
-            return 0.0, 0.0
-        
+            measurements.append(self.get_force_reading())
         avg, std = statistics.mean(measurements), statistics.stdev(measurements)
         print(f"📊 Baseline: {avg:.3f} ± {std:.3f} N")
         return avg, std
 
 
-    def start_continuous_monitoring(self, period_ms=50):
-        """Start continuous monitoring mode for high-frequency sampling
+    def get_continuous_force_reading(self, duration_seconds=10):
+        """Get continuous force reading for specified duration"""
+        print(f"🔄 Starting continuous force reading for {duration_seconds} seconds...")
+        print("Press Ctrl+C to stop early")
         
-        Args:
-            period_ms: Sampling period in milliseconds (default: 50ms = 20 Hz)
-                      Lower values = higher frequency (e.g., 1ms = 1000 Hz)
-        """
-        if not self.is_connected():
-            print("⚠️ Sensor not connected")
-            return False
-        
-        if not self.device:
-            print("❌ Device not available")
-            return False
+        start_time = time.time()
+        readings = []
         
         try:
-            # Calculate frequency for logging
-            freq = 1000.0 / period_ms
-            print(f"✅ Starting continuous monitoring at {freq:.1f} Hz (period: {period_ms}ms)")
-            self.device.start(period=period_ms)
-            return True
-        except Exception as e:
-            print(f"❌ Error starting continuous monitoring: {e}")
-            return False
-
-
-    def stop_continuous_monitoring(self):
-        """Stop continuous monitoring mode"""
-        if self.device:
-            try:
-                self.device.stop()
-                print("✅ Continuous monitoring stopped")
-            except Exception as e:
-                print(f"⚠️ Error stopping continuous monitoring: {e}")
-
-
-    def get_continuous_reading(self) -> float:
-        """Get a single reading during continuous monitoring (faster than get_force_reading)"""
-        if not self.is_connected() or not self.device or not self.sensor:
-            return 0.0
+            while time.time() - start_time < duration_seconds:
+                force = self.get_force_reading()
+                readings.append(force)
+        except KeyboardInterrupt:
+            print("\n🔴 Ctrl+C pressed, stopping continuous force reading")
         
-        try:
-            if self.device.read():
-                value = self.sensor.values[0]
-                self.sensor.clear()
-                return value
-            else:
-                return 0.0
-        except Exception as e:
-            print(f"⚠️ Error reading force: {e}")
-            return 0.0
+        print(f"📊 Completed {len(readings)} readings in {time.time() - start_time:.1f} seconds")
+        return readings
+
 
     def cleanup(self):
         """Clean up device connection"""
@@ -172,3 +123,4 @@ class ForceSensor:
             print("🔒 Force sensor connection closed")
         self.device = None
         self.godirect = None
+        

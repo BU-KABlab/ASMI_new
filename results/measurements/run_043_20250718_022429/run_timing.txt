@@ -1,0 +1,13 @@
+ASMI Run Timing Information
+========================================
+Total Run Time: 00:04:39.64
+Wells Completed: 17/17
+Average Time per Well: 16.4 seconds
+Start Time: 2025-07-18 02:24:21
+End Time: 2025-07-18 02:29:01
+Parameters:
+  Step Size: 0.1 mm
+  Force Limit: 30.0 N
+  Z Target: -18.0 mm
+  Target Force: 15.0 N
+  Dynamic Mode: False

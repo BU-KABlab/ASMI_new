@@ -68,7 +68,7 @@ python test_force_monitoring_advanced.py --wells A1,A2 --no-confirm
 
 The scripts will:
 
-1. Create a new run folder in `results/well_measurements/run_XXX_YYYYMMDD_HHMMSS/`
+1. Create a new run folder in `results/measurements/run_XXX_YYYYMMDD_HHMMSS/`
 2. Save individual well data files (e.g., `well_A1_20250711_123456.csv`)
 3. Create a summary file (`well_summary_XXX_YYYYMMDD_HHMMSS.csv`)
 4. Display real-time progress and results
@@ -76,7 +76,7 @@ The scripts will:
 ## Example Output Structure
 
 ```
-results/well_measurements/run_007_20250711_053933/
+results/measurements/run_007_20250711_053933/
 ├── well_A5_20250711_054103.csv
 ├── well_A6_20250711_053955.csv
 ├── well_B5_20250711_054049.csv

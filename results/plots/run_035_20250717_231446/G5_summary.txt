@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well G5
+==================================================
+Elastic Modulus: 538061 Pa
+Uncertainty: ±131677 Pa
+Poisson's Ratio: 0.5
+Sample Height: 9.1 mm
+Fit Quality (R²): 0.782
+Depth Range: 0.00-2.46 mm
+Fit Parameters: A=1.210, d0=1.297
+Analysis Date: 2025-07-17 23:15:47

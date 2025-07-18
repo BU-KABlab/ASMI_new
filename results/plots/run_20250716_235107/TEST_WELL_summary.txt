@@ -1,0 +1,10 @@
+ASMI Analysis Results for Well TEST_WELL
+==================================================
+Elastic Modulus: 3129177 Pa
+Uncertainty: ±31513 Pa
+Poisson's Ratio: 0.5
+Sample Height: 9.1 mm
+Fit Quality (R²): nan
+Depth Range: 0.00-2.47 mm
+Fit Parameters: A=6.597, d0=0.123
+Analysis Date: 2025-07-16 23:51:07
