@@ -371,17 +371,12 @@ def main(
                 print("⚠️ No run folder detected; skipping heatmap")
                 return
         finally:
-            # Move to pickup position if requested, otherwise home
+            # Move to pickup position at the end of the measurements if requested, otherwise home
             try:
                 if move_to_pickup:
                     print(f"🎯 Moving to pickup position: {pickup_position}")
                     # Use the existing pickup method for Y position, then move to X,Z if needed
-                    cnc.move_to_pickup_position(y_position=pickup_position[1])
-                    # Move to specific X and Z coordinates if not at default values
-                    if pickup_position[0] != 0.0 or pickup_position[2] != 0.0:
-                        gcode = f"G01 X{pickup_position[0]:.3f} Y{pickup_position[1]:.3f} Z{pickup_position[2]:.3f} F{cnc.FEEDRATE}"
-                        cnc.send_gcode(gcode)
-                        cnc.wait_for_idle()
+                    cnc.move_to_pickup_position(pickup_position=pickup_position)
                     print(f"✅ Positioned at pickup location: X={pickup_position[0]:.1f}, Y={pickup_position[1]:.1f}, Z={pickup_position[2]:.1f}")
                 else:
                     cnc.home(zero_after=True)
@@ -636,7 +631,14 @@ if __name__ == "__main__":
     # cnc = CNCController()
     # cnc.home(zero_after=True)
     
-    wells_to_test = ["B11", "C11"]
-    main(do_measure=False, existing_run_folder='run_463_20250917_000017', wells_to_test=wells_to_test, contact_method="retrospective", measure_with_return=True)
+    wells_to_test = ["B11"]
+    main(do_measure=True, 
+         existing_run_folder='run_463_20250917_000017', 
+         wells_to_test=wells_to_test, 
+         contact_method="retrospective", 
+         measure_with_return=True,
+         move_to_pickup=True, # Move to pickup position after measurements
+         pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
+         )
 
 

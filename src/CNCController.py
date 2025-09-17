@@ -572,7 +572,7 @@ class CNCController:
         return filename
 
 
-    def move_to_pickup_position(self, y_position: float = 140.0, feedrate: float = FEEDRATE):
+    def move_to_pickup_position(self, pickup_position: tuple[float, float, float], feedrate: float = FEEDRATE):
         """Move to a Y position that is convenient for the robot arm to pick up the well."""
         # Always check current Z position and move to safety height first
         current_pos = self.get_current_position()
@@ -583,7 +583,7 @@ class CNCController:
         if z_current != Z_INITIAL:
             self.move_to_z(Z_INITIAL)
             
-        print(f"📍 Moving to pickup position: Y={y_position:.3f}")
-        gcode = f"G01 Y{y_position:.3f} F{feedrate}"
+        print(f"📍 Moving to pickup position: Y={pickup_position[1]:.3f}")
+        gcode = f"G01 X{pickup_position[0]:.3f} Y{pickup_position[1]:.3f} Z{pickup_position[2]:.3f} F{feedrate}"
         self.send_gcode(gcode)
         self.save_position()
