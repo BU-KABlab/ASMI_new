@@ -2,6 +2,10 @@
 """
 Force monitoring module for ASMI system
 Provides functionality to test force monitoring at multiple wells with force limits
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
 """
 
 import time

@@ -1,3 +1,13 @@
+"""
+Force Sensor Module for ASMI
+
+Interfaces with GoDirect force sensors for real-time force measurements.
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
+"""
+
 import time
 import statistics
 from godirect import GoDirect

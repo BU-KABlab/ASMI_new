@@ -1,3 +1,13 @@
+"""
+CNC Controller Module for ASMI
+
+Handles CNC machine control, positioning, and G-code operations.
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
+"""
+
 import serial
 import time
 import csv

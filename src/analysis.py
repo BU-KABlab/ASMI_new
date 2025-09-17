@@ -1,6 +1,10 @@
 """
 ASMI Data Analysis v2 - Elastic Modulus Calculation from Indentation Data
 Hertzian contact mechanics with robust contact detection and plotting wrappers.
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
 """
 
 import csv
@@ -649,6 +653,4 @@ def main(contact_method: str = "extrapolation"):
 
 
 if __name__ == "__main__":
-    main("extrapolation")
-
-
+    main("retrospective")

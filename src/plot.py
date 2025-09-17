@@ -1,6 +1,10 @@
 """
 ASMI Plotting Functions - Visualization for Indentation Analysis
 Contains all plotting functions for data visualization and analysis results
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
 """
 
 import matplotlib.pyplot as plt

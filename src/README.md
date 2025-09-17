@@ -1,255 +1,253 @@
-# ASMI Contact Point Detection and Analysis
+# ASMI Source Code Documentation
 
-This document explains how contact point detection works in the ASMI system, including both real-time detection during measurement and post-processing analysis.
+This directory contains the core modules of the Automated Soft Matter Indenter (ASMI) system. Each module is designed to handle specific aspects of the measurement and analysis workflow.
 
-## Overview
+## Module Overview
 
-Contact point detection is crucial for accurate material property calculations. The system uses two approaches:
+### Core Modules
 
-1. **Real-time Contact Detection**: During measurement, detects when the indenter first touches the material
-2. **Post-processing Analysis**: Refines the contact point after measurement for maximum accuracy
+#### `CNCController.py`
+**Purpose**: Controls the CNC machine for precise positioning and movement operations.
 
-## Real-time Contact Detection
+**Key Features**:
+- Serial communication with CNC machine
+- G-code command generation and execution
+- Well plate positioning (96-well format)
+- Homing and safety operations
+- Position tracking and validation
 
-### Parameters
+**Main Classes**:
+- `CNCController`: Main controller class for CNC operations
 
-The `dynamic_indentation_measurement` function uses these key parameters:
+**Key Methods**:
+- `home()`: Home all axes with optional zeroing
+- `move_to_well(col, row, z)`: Move to specific well position
+- `move_to_z(z)`: Move Z-axis to specified position
+- `get_current_position()`: Get current XYZ coordinates
+- `wait_for_idle()`: Wait for machine to complete operations
 
-- `contact_force_threshold` (default: 2.0N): Force threshold to detect contact
-- `force_limit` (default: 45.0N): Maximum force before stopping
-- `step_size` (default: 0.1mm): Distance between measurements
+**Dependencies**: `serial`, `time`, `csv`
 
-### How It Works
+---
 
-1. **Baseline Measurement**: Takes initial force readings to establish baseline
-2. **Continuous Monitoring**: Moves indenter down in small steps while monitoring force
-3. **Contact Detection**: When `corrected_force` (raw force - baseline) exceeds threshold, contact is detected
-4. **Measurement Continuation**: Continues measuring until force limit or target Z is reached
+#### `ForceSensor.py`
+**Purpose**: Interfaces with GoDirect force sensors for real-time force measurements.
 
-### Code Example
+**Key Features**:
+- GoDirect sensor communication
+- Force calibration and baseline correction
+- Real-time data acquisition
+- Sensor status monitoring
 
-```python
-from src.force_monitoring import dynamic_indentation_measurement
+**Main Classes**:
+- `ForceSensor`: Main interface for force sensor operations
 
-# Run measurement with contact detection
-success = dynamic_indentation_measurement(
-    cnc=cnc_controller,
-    force_sensor=force_sensor,
-    well="A1",
-    contact_force_threshold=2.0,  # Contact detected at 2N
-    force_limit=45.0,             # Stop at 45N
-    step_size=0.1                 # 0.1mm steps
-)
+**Key Methods**:
+- `get_force_reading()`: Get current force measurement
+- `calibrate()`: Calibrate sensor baseline
+- `is_connected()`: Check sensor connection status
+
+**Dependencies**: `godirect`, `time`
+
+---
+
+#### `analysis.py`
+**Purpose**: Performs data analysis using Hertzian contact mechanics and provides visualization.
+
+**Key Features**:
+- Hertzian contact mechanics fitting
+- Multiple contact detection methods
+- Elastic modulus calculation
+- R² quality assessment
+- Data filtering and preprocessing
+
+**Main Classes**:
+- `IndentationAnalyzer`: Main analysis class
+
+**Key Methods**:
+- `analyze_well()`: Analyze a single well's data
+- `find_extraploation_contact_point()`: Extrapolation-based contact detection
+- `fit_hertz_model()`: Fit Hertzian model to force-depth data
+- `plot_contact_detection()`: Visualize contact detection
+- `plot_results()`: Plot analysis results
+
+**Contact Detection Methods**:
+- **Extrapolation**: Linear extrapolation from force threshold
+- **Retrospective**: Analysis of entire force curve
+- **Simple Threshold**: Basic force threshold detection
+
+**Dependencies**: `numpy`, `scipy`, `matplotlib`, `pandas`
+
+---
+
+#### `force_monitoring.py`
+**Purpose**: Implements measurement protocols and data acquisition workflows.
+
+**Key Features**:
+- Automated indentation measurements
+- Return measurement protocols
+- Force limit monitoring
+- Data logging and CSV output
+- Safety monitoring
+
+**Main Functions**:
+- `simple_indentation_measurement()`: Single-direction indentation
+- `simple_indentation_with_return_measurement()`: Bidirectional measurement
+- `get_and_increment_run_count()`: Run counter management
+
+**Measurement Parameters**:
+- `z_target`: Target indentation depth
+- `step_size`: Movement step size
+- `force_limit`: Maximum allowed force
+- `well_top_z`: Well top position before indentation
+
+**Dependencies**: `time`, `csv`, `os`, `datetime`
+
+---
+
+#### `plot.py`
+**Purpose**: Provides comprehensive visualization capabilities for measurement data and analysis results.
+
+**Key Features**:
+- Raw data visualization
+- Contact detection plots
+- Analysis result plots
+- Heatmap generation
+- Directional data plotting
+
+**Main Classes**:
+- `Plotter`: Main plotting interface
+
+**Key Methods**:
+- `plot_raw_data_all_wells()`: Plot all wells' raw data
+- `plot_raw_force_individual_wells()`: Individual well force plots
+- `plot_contact_detection()`: Contact point visualization
+- `plot_results()`: Analysis results visualization
+- `plot_well_heatmap()`: 96-well plate heatmaps
+
+**Plot Types**:
+- Raw force vs position
+- Contact detection with thresholds
+- Fitted curves with R² values
+- Elastic modulus heatmaps
+- Directional analysis plots
+
+**Dependencies**: `matplotlib`, `numpy`, `pandas`
+
+---
+
+## Data Flow
+
+```
+1. CNCController.py
+   ↓ (positioning)
+2. ForceSensor.py
+   ↓ (force data)
+3. force_monitoring.py
+   ↓ (measurement data)
+4. analysis.py
+   ↓ (analysis results)
+5. plot.py
+   ↓ (visualizations)
 ```
 
-## Post-processing Analysis
+## Configuration Files
 
-### Contact Point Detection Methods
+### `run_count.txt`
+- Stores the current run counter
+- Automatically incremented for each measurement batch
+- Used for unique file naming
 
-The system provides two methods for finding the contact point in post-processing:
+### `last_position.csv`
+- Stores the last known CNC position
+- Used for position recovery and validation
+- Updated after each movement operation
 
-#### 1. Basic Contact Detection (`find_contact_point`)
+## Dependencies
 
-Uses multiple strategies to robustly detect contact:
-
-- **Sustained Force**: Looks for force staying above threshold for several points
-- **Smoothed Force**: Uses rolling average to reduce noise
-- **Force Derivative**: Detects rapid force changes
-- **Simple Threshold**: Fallback to basic threshold detection
-
-#### 2. True Contact Detection (`find_true_contact_point`)
-
-**This is the key method for accurate analysis.**
-
-1. **Threshold Detection**: Finds first point where force exceeds threshold
-2. **Trend Analysis**: Analyzes force trend before threshold contact
-3. **Extrapolation**: Extrapolates trend back to zero force
-4. **True Contact**: Finds where indenter actually first touched material
-
-**Why This Matters**: The threshold contact point is delayed due to the force threshold. Extrapolating back gives the true contact point where force should be zero.
-
-### Code Example
-
-```python
-from src.analysis import IndentationAnalyzer
-
-analyzer = IndentationAnalyzer()
-
-# Load data
-analyzer.load_data("measurement_data.csv")
-
-# Find true contact point
-contact_idx = analyzer.find_true_contact_point(z_positions, corrected_forces)
-print(f"True contact at index {contact_idx}: Z={z_positions[contact_idx]:.3f}mm")
+### Required Python Packages
+```bash
+pip install pyserial godirect numpy scipy matplotlib pandas
 ```
 
-## Comprehensive Analysis Methods
+### Hardware Requirements
+- CNC machine with USB serial connection
+- GoDirect force sensor (Vernier)
+- 96-well plate or compatible sample holder
 
-### Original Script Analysis (`analyze_well_original_method`)
+## Usage Patterns
 
-This implements the complete analysis pipeline from the original ASMI script:
+### Basic Measurement Workflow
+1. Initialize `CNCController` and `ForceSensor`
+2. Home the CNC machine
+3. Call measurement functions from `force_monitoring.py`
+4. Analyze data using `IndentationAnalyzer`
+5. Generate plots using `Plotter`
 
-#### 1. **Force Correction Tables**
-Extensive lookup tables based on:
-- **Poisson Ratio**: 0.3-0.5 range
-- **Sample Height**: 3.5-9.5mm range
-- **Correction Parameters**: b and c values for each combination
+### Analysis-Only Workflow
+1. Load existing data using `IndentationAnalyzer`
+2. Perform analysis with desired contact detection method
+3. Generate visualizations using `Plotter`
 
-#### 2. **Iterative Depth Adjustment**
-The core algorithm:
-```
-while |d0| > 0.01 mm:
-    ├─ (re-)compute C·d^B for every depth point
-    ├─ F_corr ← F_meas / (C·d^B)  # new force correction
-    ├─ select points with 0.24 mm ≤ d ≤ 0.50 mm
-    ├─ least-squares fit F_corr = A·(d – d0)^1.5
-    └─ shift all depths d ← d – d0
-end
-```
+### Batch Processing
+1. Iterate through multiple wells
+2. Perform measurements for each well
+3. Aggregate results for heatmap generation
+4. Generate comprehensive visualizations
 
-#### 3. **Elastic Modulus Calculation**
-- **Hertzian Model**: F = A·(d – d0)^1.5
-- **Effective Modulus**: E* = (A × 0.75) / (r_sphere^0.5)
-- **Material Modulus**: Accounts for sphere and sample properties
-- **Empirical Correction**: Adjusts for softer samples
+## Error Handling
 
-### Code Example
+Each module includes comprehensive error handling:
+- Serial communication errors
+- Sensor connection issues
+- Data validation errors
+- File I/O errors
+- Hardware timeout errors
 
-```python
-# Use original script's comprehensive analysis
-results = analyzer.analyze_well_original_method(
-    depths=depths,
-    forces=forces,
-    p_ratio=0.4,
-    well_name="A1"
-)
+## Performance Considerations
 
-if results:
-    print(f"Elastic Modulus: {results['elastic_modulus']:,.0f} Pa")
-    print(f"Uncertainty: {results['uncertainty']:,.0f} Pa")
-    print(f"Converged: {results['converged']}")
-```
+- **Serial Communication**: Optimized for minimal delays
+- **Data Processing**: Efficient NumPy operations
+- **Memory Management**: Streaming data processing for large datasets
+- **Plotting**: Lazy loading and efficient rendering
 
-## Data Output
+## Testing
 
-### CSV Structure
+Unit tests are available in the `tests/` directory:
+- `test_cnc_controller.py`: CNC control functionality
+- `test_force_sensor.py`: Force sensor operations
 
-Measurement data is saved with these columns:
-- `Well`: Well identifier (e.g., "A1")
-- `Z_Position(mm)`: Z position of indenter
-- `Raw_Force(N)`: Raw force sensor reading
-- `Corrected_Force(N)`: Force minus baseline
-- `Timestamp`: Measurement timestamp
+## Extensibility
 
-### Analysis Results
+The modular design allows for easy extension:
+- New contact detection methods in `analysis.py`
+- Additional measurement protocols in `force_monitoring.py`
+- Custom visualization types in `plot.py`
+- New hardware interfaces following existing patterns
 
-The `AnalysisResult` dataclass contains:
-- `elastic_modulus`: Calculated elastic modulus (Pa)
-- `uncertainty`: Uncertainty in measurement (Pa)
-- `poisson_ratio`: Poisson ratio used
-- `fit_A`: Hertzian fit parameter A
-- `fit_d0`: Depth offset parameter
-- `converged`: Whether iterative fitting converged
-- `depth_range`: Analysis depth range
-- `contact_z`: Z position at contact
-- `contact_force`: Force at contact point
+## Maintenance
 
-## Visualization
+### Regular Tasks
+- Update run counter if needed
+- Verify sensor calibration
+- Check CNC positioning accuracy
+- Monitor data file sizes
 
-### Contact Detection Plot (`plot_contact_detection`)
+### Troubleshooting
+- Check serial connections
+- Verify sensor communication
+- Validate data file integrity
+- Review error logs
 
-Shows:
-- Force vs. Z position
-- Contact point highlighted
-- Baseline force level
-- Threshold line
+## Version History
 
-### Analysis Results Plot (`plot_results`)
+### v2.0
+- Enhanced contact detection methods
+- Return measurement support
+- Improved visualization
+- Better error handling
 
-Shows:
-- Original vs. corrected data
-- Hertzian fit curve
-- Analysis range highlighted
-- Material properties
-
-## Best Practices
-
-### 1. **Threshold Selection**
-- **Too Low**: False positives from noise
-- **Too High**: Delayed contact detection
-- **Recommended**: 2.0N for most materials
-
-### 2. **Analysis Range**
-- **Depth Range**: 0.24-0.50mm (optimal for Hertzian model)
-- **Data Points**: At least 10 points in range
-- **Force Range**: Should exceed 0.04N for reliable analysis
-
-### 3. **Poisson Ratio**
-- **Range**: 0.3-0.5 for most polymers
-- **Default**: 0.4 if unknown
-- **Impact**: Affects force correction tables
-
-### 4. **Sample Height**
-- **Estimation**: Based on contact Z position
-- **Range**: 3.5-9.5mm for correction tables
-- **Impact**: Critical for force corrections
-
-## Troubleshooting
-
-### Common Issues
-
-1. **No Contact Detected**
-   - Check force sensor calibration
-   - Lower contact threshold
-   - Verify sample is present
-
-2. **Poor Fit Quality**
-   - Ensure sufficient data in 0.24-0.50mm range
-   - Check for sample surface contamination
-   - Verify Poisson ratio
-
-3. **Non-convergence**
-   - Increase max iterations
-   - Check data quality
-   - Verify sample properties
-
-4. **Unrealistic Modulus**
-   - Check units (Pa vs kPa vs MPa)
-   - Verify sphere radius
-   - Check force sensor calibration
-
-### Error Messages
-
-- `"Not enough data points"`: Need at least 10 measurements
-- `"Force range too small"`: Force variation < 0.04N
-- `"Fit failed"`: Numerical issues in curve fitting
-- `"No contact detected"`: Force never exceeded threshold
-
-## Example Workflow
-
-```python
-# 1. Run measurement
-success = dynamic_indentation_measurement(cnc, force_sensor, "A1")
-
-# 2. Load and analyze data
-analyzer = IndentationAnalyzer()
-analyzer.load_data("well_A1_20240101_120000.csv")
-
-# 3. Find contact point
-contact_idx = analyzer.find_true_contact_point(z_positions, forces)
-
-# 4. Calculate depths
-depths, contact_z, shifted_forces = analyzer.calculate_indentation_depth(
-    z_positions, contact_idx, forces
-)
-
-# 5. Perform comprehensive analysis
-results = analyzer.analyze_well_original_method(
-    depths, shifted_forces, p_ratio=0.4, well_name="A1"
-)
-
-# 6. Save and visualize results
-analyzer.plot_results(results, save_plot=True)
-```
-
-This comprehensive approach ensures accurate contact point detection and reliable material property calculations. 
+### v1.0
+- Initial implementation
+- Basic measurement capabilities
+- Core analysis functions

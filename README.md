@@ -1,119 +1,247 @@
 # ASMI - Automated Soft Matter Indenter
 
-An automated system for measuring samples using CNC positioning and force sensors.
+A comprehensive automated system for measuring soft matter samples using CNC positioning and force sensors. The system provides precise indentation measurements with real-time force monitoring, data analysis, and visualization capabilities.
+
+## Overview
+
+The Automated Soft Matter Indenter (ASMI) is designed for high-throughput mechanical characterization of soft materials, particularly useful for:
+- Hydrogel characterization
+- Tissue engineering applications
+- Soft material property analysis
+- 96-well plate screening
+- Time-series measurements
+
+## Key Features
+
+- **Automated CNC Control**: Precise positioning across 96-well plates
+- **Real-time Force Monitoring**: Continuous force measurement during indentation
+- **Multiple Contact Detection Methods**: Extrapolation, retrospective, and threshold-based
+- **Bidirectional Measurements**: Both downward indentation and upward return measurements
+- **Comprehensive Data Analysis**: Hertzian contact mechanics fitting with R² analysis
+- **Advanced Visualization**: Raw data plots, contact detection plots, analysis results, and heatmaps
+- **Flexible Workflows**: Measurement, analysis-only, or scheduled measurement modes
+- **Data Management**: Automatic CSV splitting for directional measurements
 
 ## Project Structure
 
 ```
 ASMI_new/
-├── src/                    # Source code
+├── main_asmi.py              # Main entry point with parameter-based interface
+├── src/                      # Core source code modules
 │   ├── __init__.py
-│   ├── CNCController.py    # CNC machine control
-│   ├── ForceSensor.py      # Force sensor interface
-│   ├── analysis.py         # Data analysis and visualization
-│   └── force_monitoring.py # Force monitoring module
-├── tests/                  # Test files
-│   ├── __init__.py
-│   ├── test_cnc_controller.py
-│   └── test_force_sensor.py
-├── test_force_monitoring.py           # Original comprehensive test script
-├── test_force_monitoring_simple.py    # Simple force monitoring test
-├── test_force_monitoring_advanced.py  # Advanced force monitoring test with CLI
-├── main_asmi.py           # Main entry point
-├── FORCE_MONITORING_README.md # Force monitoring documentation
-└── README.md              # This file
+│   ├── CNCController.py      # CNC machine control and positioning
+│   ├── ForceSensor.py        # Force sensor interface and calibration
+│   ├── analysis.py           # Data analysis and Hertzian fitting
+│   ├── force_monitoring.py   # Force measurement protocols
+│   ├── plot.py               # Visualization and plotting functions
+│   ├── run_count.txt         # Run counter for file naming
+│   └── last_position.csv     # Last known CNC position
+├── results/                  # Data output (local only, not in repo)
+│   ├── measurements/         # Raw measurement data
+│   └── plots/               # Generated plots and analysis results
+├── archived/                 # Legacy code (local only)
+├── tests/                    # Unit tests
+└── README.md                 # This file
 ```
 
 ## Installation
 
-1. Install required packages:
+### Prerequisites
+- Python 3.8 or higher
+- CNC machine with USB connection
+- GoDirect force sensor (Vernier)
+
+### Dependencies
 ```bash
-pip install pyserial godirect
+pip install pyserial godirect numpy scipy matplotlib pandas
 ```
 
-2. Ensure your CNC machine is connected via USB and the force sensor is plugged in.
+### Hardware Setup
+1. Connect CNC machine via USB
+2. Connect GoDirect force sensor
+3. Ensure proper power supply and grounding
+4. Calibrate force sensor before first use
 
-## Usage
+## Quick Start
 
-### Main Program
-Run the main program:
-```bash
-python main_asmi.py
+### Basic Measurement
+```python
+from main_asmi import main
+
+# Measure wells A1 and A2 with default settings
+main(do_measure=True, wells_to_test=["A1", "A2"])
+
+# Measure with return measurement (up/down)
+main(do_measure=True, wells_to_test=["A1", "A2"], measure_with_return=True)
 ```
 
-### Force Monitoring Tests
-
-#### Simple Force Monitoring Test
-For quick testing with predefined wells:
-```bash
-python test_force_monitoring_simple.py
-```
-Edit the script to modify `wells_to_test` and other parameters.
-
-#### Advanced Force Monitoring Test
-For flexible testing with command-line arguments:
-```bash
-# Test specific wells
-python test_force_monitoring_advanced.py --wells A1,A2,B1,B2
-
-# Test with custom parameters
-python test_force_monitoring_advanced.py --wells A6,B6,C6 --target-z -20 --force-limit 50
-
-# Test with high precision
-python test_force_monitoring_advanced.py --wells A5,B5,C5 --period-ms 5 --feedrate 100
+### Analysis of Existing Data
+```python
+# Analyze existing measurement data
+main(do_measure=False, existing_run_folder="run_463_20250917_000017")
 ```
 
-#### Original Comprehensive Test
-For the full test suite:
-```bash
-python test_force_monitoring.py
+### Scheduled Measurements
+```python
+from main_asmi import measure_at_intervals
+
+# Measure every hour for 24 hours
+measure_at_intervals(
+    interval_seconds=3600,  # 1 hour
+    cycles=24,
+    wells_to_test=["A1", "A2", "B1", "B2"]
+)
 ```
 
-## Testing
+## Usage Examples
 
-Run all unit tests:
-```bash
-python -m unittest discover tests
+### Parameter Configuration
+```python
+main(
+    do_measure=True,                    # Enable measurement
+    wells_to_test=["A1", "A2", "B1"],  # Wells to measure
+    contact_method="extrapolation",     # Contact detection method
+    measure_with_return=True,           # Enable return measurements
+    z_target=-15.0,                     # Target indentation depth (mm)
+    step_size=0.01,                     # Step size (mm)
+    force_limit=5.0,                    # Force limit (N)
+    well_top_z=-9.0,                    # Well top position (mm)
+    generate_heatmap=True               # Generate heatmaps
+)
 ```
 
-Run specific unit test:
-```bash
-python tests/test_force_sensor.py
-python tests/test_cnc_controller.py
+### Contact Detection Methods
+- **`"extrapolation"`**: Linear extrapolation from force threshold (default)
+- **`"retrospective"`**: Retrospective analysis of force data
+- **`"simple_threshold"`**: Simple force threshold detection
+
+### Measurement Modes
+1. **Simple Indentation**: Single downward measurement
+2. **Return Measurement**: Both downward and upward measurements with directional analysis
+
+## Data Output
+
+### File Structure
+```
+results/
+├── measurements/
+│   └── run_XXX_YYYYMMDD_HHMMSS/
+│       ├── well_A1_YYYYMMDD_HHMMSS.csv
+│       ├── well_A1_YYYYMMDD_HHMMSS_down.csv  # Return measurements
+│       └── well_A1_YYYYMMDD_HHMMSS_up.csv
+└── plots/
+    └── run_XXX_YYYYMMDD_HHMMSS/
+        ├── well_heatmap_down.png
+        ├── well_heatmap_up.png
+        ├── A1_analysis_extrapolation_down.png
+        └── A1_contact_detection_extrapolation_down.png
 ```
 
-## Components
+### Data Format
+CSV files contain:
+- Timestamp, Z position, Raw force, Corrected force
+- Direction (for return measurements)
+- Metadata (measurement parameters, total time)
 
-### CNCController
-- Controls CNC machine movement
-- Handles well plate positioning
-- Manages G-code commands
+## Analysis Features
 
-### ForceSensor
-- Interfaces with GoDirect force sensors
-- Provides force measurements
-- Handles sensor calibration
+### Hertzian Contact Mechanics
+- Automatic fitting of force-depth curves
+- Elastic modulus calculation
+- R² quality assessment
+- Uncertainty estimation
 
-### Analysis
-- Real-time data processing
-- Statistical analysis
-- Data visualization
-- Force vs Z position analysis
+### Visualization
+- Raw force vs position plots
+- Contact detection visualization
+- Analysis results with fitted curves
+- 96-well plate heatmaps
+- Directional analysis plots
 
-### Force Monitoring
-- Automated well testing with force limits
-- Safety monitoring and emergency stops
-- Batch processing of multiple wells
-- Comprehensive data logging and analysis
+### Data Processing
+- Automatic baseline correction
+- Direction-based data splitting
+- Contact point detection
+- Curve fitting with bounds
+
+## Safety Features
+
+- Force limit monitoring
+- Emergency stop capabilities
+- Automatic homing before/after measurements
+- Position validation
+- Error handling and recovery
 
 ## Configuration
 
-Edit the configuration constants in each module:
-- `CNCController.py`: Port, baud rate, well plate geometry
-- `ForceSensor.py`: Threshold values, sampling parameters
-- `force_monitoring.py`: Default force limits, sampling periods, feedrates
+### CNC Settings
+Edit `src/CNCController.py`:
+- Serial port configuration
+- Well plate geometry
+- Movement parameters
 
-## Documentation
+### Force Sensor Settings
+Edit `src/ForceSensor.py`:
+- Calibration parameters
+- Sampling rates
+- Threshold values
 
-- `FORCE_MONITORING_README.md` - Detailed documentation for force monitoring tests
-- `results/README.md` - Information about data output and file structure 
+### Analysis Parameters
+Edit `src/analysis.py`:
+- Fitting bounds
+- Contact detection thresholds
+- Analysis ranges
+
+## Troubleshooting
+
+### Common Issues
+1. **Serial Connection Error**: Check USB connection and port settings
+2. **Force Sensor Not Found**: Verify GoDirect sensor connection
+3. **Homing Failed**: Check CNC power and limit switches
+4. **Import Errors**: Install missing dependencies
+
+### Debug Mode
+Enable verbose output by modifying print statements in the source code.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Citation
+
+If you use this software in your research, please cite:
+
+```
+ASMI - Automated Soft Matter Indenter
+[Your Institution], [Year]
+```
+
+## Support
+
+For technical support or questions:
+- Check the troubleshooting section
+- Review the source code documentation
+- Open an issue on GitHub
+
+## Changelog
+
+### Version 2.0
+- Parameter-based interface
+- Return measurement support
+- Enhanced visualization
+- Improved data management
+- Multiple contact detection methods
+
+### Version 1.0
+- Initial release
+- Basic measurement capabilities
+- CNC control integration
+- Force sensor interface

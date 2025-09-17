@@ -7,6 +7,10 @@ Supports two workflows:
   2) Analyze existing data folder → Plot
 
 Also supports splitting direction-tagged measurements into _down/_up CSVs and per-direction analysis/plots.
+
+Author: [Your Name/Institution]
+Date: 2024
+License: MIT
 """
 
 import os
@@ -542,7 +546,10 @@ if __name__ == "__main__":
     # main(do_measure=True, wells_to_test=["A1", "A2"], contact_method="extrapolation", measure_with_return=True)
     # Or analyze existing run:
     # main(do_measure=False, existing_run_folder="run_460_20250911_062621", existing_measured_with_return=True)
+    # from src.CNCController import CNCController
+    # cnc = CNCController()
+    # cnc.home(zero_after=True)
     wells_to_test = ["B11", "C11"]
-    main(do_measure=True, existing_run_folder=None, wells_to_test=wells_to_test, contact_method="retrospective", measure_with_return=True)
+    main(do_measure=False, existing_run_folder='run_463_20250917_000017', wells_to_test=wells_to_test, contact_method="retrospective", measure_with_return=True)
 
 
