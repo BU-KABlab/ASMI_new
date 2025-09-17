@@ -1,1 +1,0 @@
-# ASMI Tests Package 

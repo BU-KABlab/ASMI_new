@@ -36,6 +36,10 @@ class AnalysisResult:
 class IndentationAnalyzer:
     """Analyzes indentation data to calculate elastic modulus with full correction factors"""
     
+    # ============================================================================
+    # PHYSICAL CONSTANTS AND PARAMETERS
+    # ============================================================================
+    
     # Physical constants
     SPHERE_RADIUS = 0.0025  # m
     SPHERE_E = 1.8e11       # Pa
@@ -46,13 +50,17 @@ class IndentationAnalyzer:
     FORCE_THRESHOLD = 2.0      # N - force threshold to detect contact
     FORCE_LIMIT = 25.0         # N - force limit for filtering data
     
-     # Well geometry constants
+    # Well geometry constants
     WELL_DEPTH = 10.9 # mm - total depth of the well
     WELL_TOP_Z = -8.0  # mm - Z position when indenter is at well top
     
     def __init__(self, data_dir: str = "."):
         self.data_dir = data_dir
         self.data = None
+    
+    # ============================================================================
+    # DATA LOADING AND PARSING
+    # ============================================================================
     
     def load_data(self, filename: str) -> bool:
         """Load CSV data file"""
@@ -66,6 +74,10 @@ class IndentationAnalyzer:
         except Exception as e:
             print(f"❌ Error loading {filename}: {e}")
             return False
+    
+    # ============================================================================
+    # CONTACT POINT DETECTION METHODS
+    # ============================================================================
     
     def find_contact_point(self, raw_forces: List[float], baseline: float, baseline_std: float) -> int:
         """Find the first contact point using multiple detection strategies.
@@ -189,27 +201,67 @@ class IndentationAnalyzer:
         print(f"🔍 Using initial contact point as true contact point (extrapolation failed)")
         return initial_contact_idx
     
+    def find_retrospective_contact_point(self, corrected_forces: List[float], threshold: float, z_positions: List[float]) -> int:
+        """Find contact using retrospective detection (go backwards from deepest indentation point)"""
+        if len(corrected_forces) < 3:
+            return 0
+        
+        # Find the last indentation depth point (highest absolute Z value)
+        max_depth_idx = max(range(len(corrected_forces)), key=lambda i: abs(z_positions[i]))
+        print(f"🔍 Deepest indentation point at index {max_depth_idx}: Z={z_positions[max_depth_idx]:.3f}mm, Force={abs(corrected_forces[max_depth_idx]):.3f}N")
+        
+        # Go backwards from deepest indentation point to find contact
+        for i in range(max_depth_idx, 0, -1):
+            current_force = abs(corrected_forces[i])
+            previous_force = abs(corrected_forces[i-1])
+            
+            # Criterion 1: Check for gradient sign change (turning point)
+            if i < len(corrected_forces) - 1:
+                # Calculate gradients: current vs previous, and next vs current
+                grad_current = current_force - previous_force
+                grad_next = abs(corrected_forces[i+1]) - current_force
+                
+                # Check for sign change in gradient (turning point)
+                if grad_current > 0 and grad_next < 0:  # Positive to negative gradient change
+                    print(f"🔍 Gradient sign change detected at index {i}: {grad_current:.3f} -> {grad_next:.3f}")
+                    return i
+                elif grad_current < 0 and grad_next > 0:  # Negative to positive gradient change
+                    print(f"🔍 Gradient sign change detected at index {i}: {grad_current:.3f} -> {grad_next:.3f}")
+                    return i
+            
+            # Criterion 2: Force below threshold (fallback)
+            if current_force <= threshold:
+                print(f"🔍 Force below threshold at index {i}: {current_force:.3f}N <= {threshold}N")
+                return i
+        
+        # If no contact found, return the first point
+        print("🔍 No contact point found, using first point")
+        return 0
+    
+    # ============================================================================
+    # INDENTATION DEPTH AND HEIGHT CALCULATIONS
+    # ============================================================================
+    
     def calculate_indentation_depth(self, z_positions: List[float], first_contact_idx: int, corrected_forces: Optional[List[float]] = None) -> Tuple[List[float], float, List[float]]:
-        """Calculate indentation depths relative to first contact point and shift forces to zero at contact.
+        """Calculate indentation depths relative to first contact point without shifting forces.
         Args:
             z_positions: List of Z positions
             first_contact_idx: Index of first contact point
-            corrected_forces: List of corrected forces (optional, for force shifting)
+            corrected_forces: List of corrected forces (optional, returned as-is)
         Returns:
-            Tuple of (depths, z_contact, shifted_forces) starting from first contact
+            Tuple of (depths, z_contact, unshifted_forces) starting from first contact
         """
         z_contact = z_positions[first_contact_idx]
         depths = [abs(z - z_contact) for z in z_positions[first_contact_idx:]]
         
-        # Shift forces to zero at contact point
-        shifted_forces = []
+        # Return forces without shifting (keep original corrected forces)
+        unshifted_forces = []
         if corrected_forces is not None:
-            contact_force = corrected_forces[first_contact_idx]
-            shifted_forces = [f - contact_force for f in corrected_forces[first_contact_idx:]]
+            unshifted_forces = corrected_forces[first_contact_idx:]
         else:
-            shifted_forces = [0.0] * len(depths)  # Placeholder
+            unshifted_forces = [0.0] * len(depths)  # Placeholder
             
-        return depths, z_contact, shifted_forces
+        return depths, z_contact, unshifted_forces
     
     def calculate_approx_height(self, z_contact: float) -> float:
         """Calculate approximate height of the sample based on contact Z position.
@@ -232,154 +284,162 @@ class IndentationAnalyzer:
         approx_height = max(0.1, min(approx_height, 50.0))
         return approx_height
     
-    def adjust_force(self, depths: List[float], forces: List[float], p_ratio: float, approx_height: float) -> List[float]:
-        """Add simulation-based adjustment factor since samples are not ideal shapes.
-        Only applies adjustment to depths within the analysis range (0.1-1.0mm).
-        Args:
-            depths: List of indentation depths
-            forces: List of forces
-            p_ratio: Poisson's ratio of the sample
-            approx_height: Approximate height of the sample
-        Returns:
-            List of adjusted forces
-        """
-        new_array = []
-        for i in range(len(depths)): 
-            # Only adjust forces for depths within the analysis range (0.1-1.0mm)
-            if 0.1 <= depths[i] <= 1.0:
-                if p_ratio < 0.325:
-                    if approx_height >= 9.5:
-                        b = 0.13
-                        c = 1.24
-                    elif approx_height >= 8.5 and approx_height < 9.5:
-                        b = 0.131
-                        c = 1.24
-                    elif approx_height >= 7.5 and approx_height < 8.5:
-                        b = 0.133
-                        c = 1.25
-                    elif approx_height >= 6.5 and approx_height < 7.5:
-                        b = 0.132
-                        c = 1.24
-                    elif approx_height >= 5.5 and approx_height < 6.5:
-                        b = 0.132
-                        c = 1.24
-                    elif approx_height >= 4.5 and approx_height < 5.5:
-                        b = 0.139
-                        c = 1.27
-                    elif approx_height >= 3.5 and approx_height < 4.5:
-                        b = 0.149
-                        c = 1.3
-                    else:
-                        b = 0.162
-                        c = 1.38
-                elif p_ratio >= 0.325 and p_ratio < 0.375:
-                    if approx_height >= 9.5:
-                        b = 0.132
-                        c = 1.25
-                    elif approx_height >= 8.5 and approx_height < 9.5:
-                        b = 0.132
-                        c = 1.25
-                    elif approx_height >= 7.5 and approx_height < 8.5:
-                        b = 0.134
-                        c = 1.25
-                    elif approx_height >= 6.5 and approx_height < 7.5:
-                        b = 0.136
-                        c = 1.26
-                    elif approx_height >= 5.5 and approx_height < 6.5:
-                        b = 0.126
-                        c = 1.25
-                    elif approx_height >= 4.5 and approx_height < 5.5:
-                        b = 0.133
-                        c = 1.27
-                    elif approx_height >= 3.5 and approx_height < 4.5:
-                        b = 0.144
-                        c = 1.32
-                    else:
-                        b = 0.169
-                        c = 1.42
-                elif p_ratio >= 0.375 and p_ratio < 0.425:
-                    if approx_height >= 9.5:
-                        b = 0.181
-                        c = 1.33
-                    elif approx_height >= 8.5 and approx_height < 9.5:
-                        b = 0.182
-                        c = 1.34
-                    elif approx_height >= 7.5 and approx_height < 8.5:
-                        b = 0.183
-                        c = 1.34
-                    elif approx_height >= 6.5 and approx_height < 7.5:
-                        b = 0.183
-                        c = 1.34
-                    elif approx_height >= 5.5 and approx_height < 6.5:
-                        b = 0.194
-                        c = 1.38
-                    elif approx_height >= 4.5 and approx_height < 5.5:
-                        b = 0.198
-                        c = 1.4
-                    elif approx_height >= 3.5 and approx_height < 4.5:
-                        b = 0.203
-                        c = 1.44
-                    else:
-                        b = 0.176
-                        c = 1.46
-                elif p_ratio >= 0.425 and p_ratio < 0.475:
-                    if approx_height >= 9.5:
-                        b = 0.156
-                        c = 1.35
-                    elif approx_height >= 8.5 and approx_height < 9.5:
-                        b = 0.152
-                        c = 1.34
-                    elif approx_height >= 7.5 and approx_height < 8.5:
-                        b = 0.156
-                        c = 1.35
-                    elif approx_height >= 6.5 and approx_height < 7.5:
-                        b = 0.161
-                        c = 1.37
-                    elif approx_height >= 5.5 and approx_height < 6.5:
-                        b = 0.153
-                        c = 1.37
-                    elif approx_height >= 4.5 and approx_height < 5.5:
-                        b = 0.166
-                        c = 1.42
-                    elif approx_height >= 3.5 and approx_height < 4.5:
-                        b = 0.179
-                        c = 1.47
-                    else:
-                        b = 0.205
-                        c = 1.59
-                else:
-                    if approx_height >= 9.5:
-                        b = 0.203
-                        c = 1.58
-                    elif approx_height >= 8.5 and approx_height < 9.5:
-                        b = 0.207
-                        c = 1.6
-                    elif approx_height >= 7.5 and approx_height < 8.5:
-                        b = 0.212
-                        c = 1.62
-                    elif approx_height >= 6.5 and approx_height < 7.5:
-                        b = 0.217
-                        c = 1.65
-                    elif approx_height >= 5.5 and approx_height < 6.5:
-                        b = 0.21
-                        c = 1.64
-                    elif approx_height >= 4.5 and approx_height < 5.5:
-                        b = 0.22
-                        c = 1.68
-                    elif approx_height >= 3.5 and approx_height < 4.5:
-                        b = 0.17
-                        c = 1.58
-                    else:
-                        b = 0.182
-                        c = 1.64
-                # Avoid division by zero by adding small epsilon to depth
-                depth_with_epsilon = max(depths[i], 1e-6)  # Minimum depth of 1 micron
-                adjusted_force = abs(forces[i]) / (c*pow(depth_with_epsilon, b))
-                new_array.append(adjusted_force)
-            else:
-                # For depths outside analysis range, use original force
-                new_array.append(abs(forces[i]))
-        return new_array
+    # ============================================================================
+    # FORCE ADJUSTMENT AND CORRECTION METHODS
+    # ============================================================================
+    
+    # def adjust_force(self, depths: List[float], forces: List[float], p_ratio: float, approx_height: float) -> List[float]:
+    #     """Add simulation-based adjustment factor since samples are not ideal shapes.
+    #     Only applies adjustment to depths within the analysis range (0.1-1.0mm).
+    #     Args:
+    #         depths: List of indentation depths
+    #         forces: List of forces
+    #         p_ratio: Poisson's ratio of the sample
+    #         approx_height: Approximate height of the sample
+    #     Returns:
+    #         List of adjusted forces
+    #     """
+    #     new_array = []
+    #     for i in range(len(depths)): 
+    #         # Only adjust forces for depths within the analysis range (0.1-1.0mm)
+    #         if 0.1 <= depths[i] <= 1.0:
+    #             if p_ratio < 0.325:
+    #                 if approx_height >= 9.5:
+    #                     b = 0.13
+    #                     c = 1.24
+    #                 elif approx_height >= 8.5 and approx_height < 9.5:
+    #                     b = 0.131
+    #                     c = 1.24
+    #                 elif approx_height >= 7.5 and approx_height < 8.5:
+    #                     b = 0.133
+    #                     c = 1.25
+    #                 elif approx_height >= 6.5 and approx_height < 7.5:
+    #                     b = 0.132
+    #                     c = 1.24
+    #                 elif approx_height >= 5.5 and approx_height < 6.5:
+    #                     b = 0.132
+    #                     c = 1.24
+    #                 elif approx_height >= 4.5 and approx_height < 5.5:
+    #                     b = 0.139
+    #                     c = 1.27
+    #                 elif approx_height >= 3.5 and approx_height < 4.5:
+    #                     b = 0.149
+    #                     c = 1.3
+    #                 else:
+    #                     b = 0.162
+    #                     c = 1.38
+    #             elif p_ratio >= 0.325 and p_ratio < 0.375:
+    #                 if approx_height >= 9.5:
+    #                     b = 0.132
+    #                     c = 1.25
+    #                 elif approx_height >= 8.5 and approx_height < 9.5:
+    #                     b = 0.132
+    #                     c = 1.25
+    #                 elif approx_height >= 7.5 and approx_height < 8.5:
+    #                     b = 0.134
+    #                     c = 1.25
+    #                 elif approx_height >= 6.5 and approx_height < 7.5:
+    #                     b = 0.136
+    #                     c = 1.26
+    #                 elif approx_height >= 5.5 and approx_height < 6.5:
+    #                     b = 0.126
+    #                     c = 1.25
+    #                 elif approx_height >= 4.5 and approx_height < 5.5:
+    #                     b = 0.133
+    #                     c = 1.27
+    #                 elif approx_height >= 3.5 and approx_height < 4.5:
+    #                     b = 0.144
+    #                     c = 1.32
+    #                 else:
+    #                     b = 0.169
+    #                     c = 1.42
+    #             elif p_ratio >= 0.375 and p_ratio < 0.425:
+    #                 if approx_height >= 9.5:
+    #                     b = 0.181
+    #                     c = 1.33
+    #                 elif approx_height >= 8.5 and approx_height < 9.5:
+    #                     b = 0.182
+    #                     c = 1.34
+    #                 elif approx_height >= 7.5 and approx_height < 8.5:
+    #                     b = 0.183
+    #                     c = 1.34
+    #                 elif approx_height >= 6.5 and approx_height < 7.5:
+    #                     b = 0.183
+    #                     c = 1.34
+    #                 elif approx_height >= 5.5 and approx_height < 6.5:
+    #                     b = 0.194
+    #                     c = 1.38
+    #                 elif approx_height >= 4.5 and approx_height < 5.5:
+    #                     b = 0.198
+    #                     c = 1.4
+    #                 elif approx_height >= 3.5 and approx_height < 4.5:
+    #                     b = 0.203
+    #                     c = 1.44
+    #                 else:
+    #                     b = 0.176
+    #                     c = 1.46
+    #             elif p_ratio >= 0.425 and p_ratio < 0.475:
+    #                 if approx_height >= 9.5:
+    #                     b = 0.156
+    #                     c = 1.35
+    #                 elif approx_height >= 8.5 and approx_height < 9.5:
+    #                     b = 0.152
+    #                     c = 1.34
+    #                 elif approx_height >= 7.5 and approx_height < 8.5:
+    #                     b = 0.156
+    #                     c = 1.35
+    #                 elif approx_height >= 6.5 and approx_height < 7.5:
+    #                     b = 0.161
+    #                     c = 1.37
+    #                 elif approx_height >= 5.5 and approx_height < 6.5:
+    #                     b = 0.153
+    #                     c = 1.37
+    #                 elif approx_height >= 4.5 and approx_height < 5.5:
+    #                     b = 0.166
+    #                     c = 1.42
+    #                 elif approx_height >= 3.5 and approx_height < 4.5:
+    #                     b = 0.179
+    #                     c = 1.47
+    #                 else:
+    #                     b = 0.205
+    #                     c = 1.59
+    #             else:
+    #                 if approx_height >= 9.5:
+    #                     b = 0.203
+    #                     c = 1.58
+    #                 elif approx_height >= 8.5 and approx_height < 9.5:
+    #                     b = 0.207
+    #                     c = 1.6
+    #                 elif approx_height >= 7.5 and approx_height < 8.5:
+    #                     b = 0.212
+    #                     c = 1.62
+    #                 elif approx_height >= 6.5 and approx_height < 7.5:
+    #                     b = 0.217
+    #                     c = 1.65
+    #                 elif approx_height >= 5.5 and approx_height < 6.5:
+    #                     b = 0.21
+    #                     c = 1.64
+    #                 elif approx_height >= 4.5 and approx_height < 5.5:
+    #                     b = 0.22
+    #                     c = 1.68
+    #                 elif approx_height >= 3.5 and approx_height < 4.5:
+    #                     b = 0.17
+    #                     c = 1.58
+    #                 else:
+    #                     b = 0.182
+    #                     c = 1.64
+    #             # Avoid division by zero by adding small epsilon to depth
+    #             depth_with_epsilon = max(depths[i], 1e-6)  # Minimum depth of 1 micron
+    #             adjusted_force = abs(forces[i]) / (c*pow(depth_with_epsilon, b))
+    #             new_array.append(adjusted_force)
+    #         else:
+    #             # For depths outside analysis range, use original force
+    #             new_array.append(abs(forces[i]))
+    #     return new_array
+    
+    # ============================================================================
+    # MATERIAL PROPERTY DETECTION
+    # ============================================================================
     
     def detect_force_limit_reached(self, filename: str) -> Tuple[bool, float]:
         """If force limit was reached during measurement by checking metadata or final force value."""
@@ -429,65 +489,69 @@ class IndentationAnalyzer:
         
         return poisson_ratio, material_type
 
-    def add_adjusted_force_column(self, filename, poisson_ratio=None):
-        """
-        Add a column of adjusted force using adjust_force and approx_height to a measurement CSV.
-        The new file will be saved as <original>_with_sim.csv in the same folder.
+    # def add_adjusted_force_column(self, filename, poisson_ratio=None):
+    #     """
+    #     Add a column of adjusted force using adjust_force and approx_height to a measurement CSV.
+    #     The new file will be saved as <original>_with_sim.csv in the same folder.
         
-        Args:
-            filename: Path to the measurement CSV file
-            poisson_ratio: Optional Poissons ratio. If None, automatically determined from force limit.
-        """
-        # Auto-determine Poisson's ratio if not provided
-        if poisson_ratio is None:
-            poisson_ratio, material_type = self.determine_poisson_ratio(filename)
-            print(f"🔍 Auto-detected material type: {material_type} (ν = {poisson_ratio})")
-        else:
-            material_type = "manual"  # User-specified Poissons ratio
-        meta = [] # metadata rows
-        data = [] # data rows
-        with open(filename, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row or 'Timestamp' in row[0]:
-                    meta.append(row)
-                elif len(row) >= 4 and all(x.replace('.', '', 1).replace('-', '', 1).isdigit() for x in row[1:4]):
-                    data.append(row)
-                else:
-                    meta.append(row)
-        if len(data) < 2:
-            print("Not enough data to compute adjusted force.")
-            return
-        z_positions = [float(row[1]) for row in data]
-        corrected_forces = [float(row[3]) for row in data]
-        # 1. Find contact point
-        first_contact_idx = self.find_contact_point(corrected_forces, 0.0, 0.0) # Pass dummy values for baseline/std
-        # 2. Calculate indentation depths
-        depths, z_contact, shifted_forces = self.calculate_indentation_depth(z_positions, first_contact_idx, corrected_forces)
-        forces = shifted_forces
-        # 3. Calculate approx height
-        approx_height = self.calculate_approx_height(z_contact)
-        # 4. Adjust force
-        adjusted_force_sim = self.adjust_force(depths, forces, poisson_ratio, approx_height)
-        # Write new file
-        outname = filename[:-4] + '_with_sim.csv' if filename.endswith('.csv') else filename + '_with_sim.csv'
-        with open(outname, 'w', newline='') as f:
-            writer = csv.writer(f)
-            for row in meta:
-                writer.writerow(row)
-            writer.writerow(['Material_Type', material_type])
-            writer.writerow(['Poisson_Ratio', f"{poisson_ratio:.3f}"])
-            writer.writerow(['Approx_Height(mm)', f"{approx_height:.3f}"])
-            writer.writerow([])
-            writer.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)', 'Adjusted_Force_Sim(N)'])
-            for i, row in enumerate(data):
-                if i >= first_contact_idx and (i - first_contact_idx) < len(adjusted_force_sim):
-                    writer.writerow(row[:4] + [f"{adjusted_force_sim[i - first_contact_idx]:.3f}"])
-                else:
-                    writer.writerow(row[:4] + [""])
-        print(f"💾 File with adjusted force column saved to: {outname}")
-        print(f"📊 Used Poissons ratio: {poisson_ratio} ({material_type})")
+    #     Args:
+    #         filename: Path to the measurement CSV file
+    #         poisson_ratio: Optional Poissons ratio. If None, automatically determined from force limit.
+    #     """
+    #     # Auto-determine Poisson's ratio if not provided
+    #     if poisson_ratio is None:
+    #         poisson_ratio, material_type = self.determine_poisson_ratio(filename)
+    #         print(f"🔍 Auto-detected material type: {material_type} (ν = {poisson_ratio})")
+    #     else:
+    #         material_type = "manual"  # User-specified Poissons ratio
+    #     meta = [] # metadata rows
+    #     data = [] # data rows
+    #     with open(filename, 'r') as f:
+    #         reader = csv.reader(f)
+    #         for row in reader:
+    #             if not row or 'Timestamp' in row[0]:
+    #                 meta.append(row)
+    #             elif len(row) >= 4 and all(x.replace('.', '', 1).replace('-', '', 1).isdigit() for x in row[1:4]):
+    #                 data.append(row)
+    #             else:
+    #                 meta.append(row)
+    #     if len(data) < 2:
+    #         print("Not enough data to compute adjusted force.")
+    #         return
+    #     z_positions = [float(row[1]) for row in data]
+    #     corrected_forces = [float(row[3]) for row in data]
+    #     # 1. Find contact point
+    #     first_contact_idx = self.find_contact_point(corrected_forces, 0.0, 0.0) # Pass dummy values for baseline/std
+    #     # 2. Calculate indentation depths
+    #     depths, z_contact, forces = self.calculate_indentation_depth(z_positions, first_contact_idx, corrected_forces)
+    #     # forces = shifted_forces  # No longer needed since forces are not shifted
+    #     # 3. Calculate approx height
+    #     approx_height = self.calculate_approx_height(z_contact)
+    #     # 4. Adjust force
+    #     adjusted_force_sim = self.adjust_force(depths, forces, poisson_ratio, approx_height)
+    #     # Write new file
+    #     outname = filename[:-4] + '_with_sim.csv' if filename.endswith('.csv') else filename + '_with_sim.csv'
+    #     with open(outname, 'w', newline='') as f:
+    #         writer = csv.writer(f)
+    #         for row in meta:
+    #             writer.writerow(row)
+    #         writer.writerow(['Material_Type', material_type])
+    #         writer.writerow(['Poisson_Ratio', f"{poisson_ratio:.3f}"])
+    #         writer.writerow(['Approx_Height(mm)', f"{approx_height:.3f}"])
+    #         writer.writerow([])
+    #         writer.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)', 'Adjusted_Force_Sim(N)'])
+    #         for i, row in enumerate(data):
+    #             if i >= first_contact_idx and (i - first_contact_idx) < len(adjusted_force_sim):
+    #                 writer.writerow(row[:4] + [f"{adjusted_force_sim[i - first_contact_idx]:.3f}"])
+    #             else:
+    #                 writer.writerow(row[:4] + [""])
+    #     print(f"💾 File with adjusted force column saved to: {outname}")
+    #     print(f"📊 Used Poissons ratio: {poisson_ratio} ({material_type})")
     
+    
+    # ============================================================================
+    # ELASTIC MODULUS CALCULATION
+    # ============================================================================
     
     def find_E(self, A: float, p_ratio: float) -> float:
         """
@@ -562,6 +626,10 @@ class IndentationAnalyzer:
             return corrected_E
         return E
     
+    # ============================================================================
+    # HERTZIAN MODEL FITTING
+    # ============================================================================
+    
     def fit_hertz_model(self, depths: np.ndarray, forces: np.ndarray, bounds=None, raise_on_fail=False) -> FitResult:
         """
         Fit data to the Hertzian contact model: F = A * (d - d0)^1.5
@@ -586,7 +654,7 @@ class IndentationAnalyzer:
 
         try:
             if bounds is not None:
-                params, covariance = curve_fit(hertz_func, depths, forces, p0=[2, 0.03], bounds=bounds)
+                params, covariance = curve_fit(hertz_func, depths, forces, p0=[2, 0.03], bounds=bounds) # p0 is the initial guess for the parameters
             else:
                 params, covariance = curve_fit(hertz_func, depths, forces, p0=[2, 0.03])
             return FitResult(params, covariance, hertz_func)
@@ -596,7 +664,11 @@ class IndentationAnalyzer:
                 raise
             return FitResult(None, None, hertz_func)
     
-    def analyze_well(self, well: str, poisson_ratio: Optional[float] = None, filename: Optional[str] = None) -> Optional[AnalysisResult]:
+    # ============================================================================
+    # MAIN ANALYSIS METHODS
+    # ============================================================================
+    
+    def analyze_well(self, well: str, poisson_ratio: Optional[float] = None, filename: Optional[str] = None, contact_method: str = "true_contact") -> Optional[AnalysisResult]:
         """Complete analysis for a single well with full correction factors"""
         print(f"\n🔬 Analyzing well {well}...")
         
@@ -639,9 +711,32 @@ class IndentationAnalyzer:
                 elif row[0] == 'Baseline_Std(N)':
                     baseline_std = float(row[1])
         
-        # Find true contact point using new criteria
-        first_contact_idx = self.find_true_contact_point(z_positions, raw_forces, baseline, baseline_std)
-        print(f"🔍 True contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Raw_Force={raw_forces[first_contact_idx]:.3f}N")
+        # Choose contact detection method
+        first_contact_idx = None
+        
+        if contact_method == "true_contact":
+            # Use the sophisticated true contact detection (extrapolation method)
+            first_contact_idx = self.find_true_contact_point(z_positions, raw_forces, baseline, baseline_std)
+            print(f"🔍 True contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Raw_Force={raw_forces[first_contact_idx]:.3f}N")
+        
+        elif contact_method == "retrospective":
+            # Use retrospective contact detection (go backwards from deepest indentation point)
+            first_contact_idx = self.find_retrospective_contact_point(corrected_forces, 0.05, z_positions)
+            print(f"🔍 Retrospective contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Force_threshold=0.05N")
+        
+        elif contact_method == "simple_threshold":
+            # Use simple force threshold detection
+            first_contact_idx = self.find_simple_contact_point(corrected_forces, 2.0)
+            print(f"🔍 Simple threshold contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Force_threshold=2.0N")
+        
+        else:
+            print(f"❌ Unknown contact method: {contact_method}. Using true_contact as fallback.")
+            first_contact_idx = self.find_true_contact_point(z_positions, raw_forces, baseline, baseline_std)
+            print(f"🔍 True contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Raw_Force={raw_forces[first_contact_idx]:.3f}N")
+        
+        if first_contact_idx is None:
+            print("❌ Contact detection failed")
+            return None
         
         # Generate contact detection plot for validation
         if filename:
@@ -655,8 +750,8 @@ class IndentationAnalyzer:
             self.plot_contact_detection(z_positions, raw_forces, first_contact_idx, well, save_plot=True, run_folder=run_folder, baseline=baseline, baseline_std=baseline_std)
         
         # Calculate indentation depths relative to first contact
-        depths, z_contact, shifted_forces = self.calculate_indentation_depth(z_positions, first_contact_idx, corrected_forces)
-        forces = shifted_forces
+        depths, z_contact, forces = self.calculate_indentation_depth(z_positions, first_contact_idx, corrected_forces)
+        # forces = shifted_forces  # No longer needed since forces are not shifted
         
         # Filter data to analysis range
         depth_in_range = []
@@ -680,13 +775,13 @@ class IndentationAnalyzer:
         approx_height = self.calculate_approx_height(z_contact)
         
         # Apply simulation-based force adjustment
-        adjusted_forces = self.adjust_force(depth_in_range, force_in_range, float(poisson_ratio), approx_height)
+        # adjusted_forces = self.adjust_force(depth_in_range, force_in_range, float(poisson_ratio), approx_height)
         
         # Fit Hertzian model (both A and d0)
         depths_array = np.array(depth_in_range)
-        adjusted_forces_array = np.array(adjusted_forces)
+        # adjusted_forces_array = np.array(adjusted_forces)
         
-        params, covariance, hertz_func = self.fit_hertz_model(depths_array, adjusted_forces_array)
+        params, covariance, hertz_func = self.fit_hertz_model(depths_array, force_in_range)
         if params is None:
             print("❌ Curve fitting failed")
             return None
@@ -710,7 +805,7 @@ class IndentationAnalyzer:
         valid_mask = depths_array > fit_d0  # Only points where (d - d0) > 0
         if np.sum(valid_mask) > 5:  # Need at least 5 valid points
             valid_depths = depths_array[valid_mask]
-            valid_forces = adjusted_forces_array[valid_mask]
+            valid_forces = force_in_range[valid_mask]
             predicted = fit_A * (valid_depths - fit_d0) ** 1.5
             ss_res = np.sum((valid_forces - predicted) ** 2)
             ss_tot = np.sum((valid_forces - np.mean(valid_forces)) ** 2)
@@ -732,115 +827,119 @@ class IndentationAnalyzer:
             depth_range=(min(depth_in_range), max(depth_in_range)),
             fit_A=fit_A,
             fit_d0=fit_d0 if fit_d0 is not None else 0.0,
-            adjusted_forces=adjusted_forces,
+            # adjusted_forces=adjusted_forces,
             depth_in_range=depth_in_range,
             material_type=material_type, # Use the determined material type
             contact_z=round(z_contact, 3),  # Z position at first contact
             contact_force=round(corrected_forces[first_contact_idx], 3)  # Force at first contact
         )
     
-    def analyze_well_original_method(self, depths: List[float], forces: List[float], p_ratio: float, well_name: str = "Unknown") -> Optional[Dict]:
-        """Analyze well data using the original script's comprehensive method.
+    # def analyze_well_original_method(self, depths: List[float], forces: List[float], p_ratio: float, well_name: str = "Unknown") -> Optional[Dict]:
+    #     """Analyze well data using the original script's comprehensive method.
         
-        This implements the complete analysis pipeline from the original script:
-        1. Calculate approximate sample height
-        2. Apply force corrections
-        3. Perform iterative depth adjustment
-        4. Calculate elastic modulus
-        5. Apply empirical corrections
+    #     This implements the complete analysis pipeline from the original script:
+    #     1. Calculate approximate sample height
+    #     2. Apply force corrections
+    #     3. Perform iterative depth adjustment
+    #     4. Calculate elastic modulus
+    #     5. Apply empirical corrections
         
-        Args:
-            depths: List of indentation depths
-            forces: List of forces
-            p_ratio: Poisson ratio
-            well_name: Name of the well
-        Returns:
-            Dictionary with analysis results or None if analysis fails
-        """
-        if len(depths) < 10:
-            print(f"❌ Not enough data points for well {well_name}")
-            return None
+    #     Args:
+    #         depths: List of indentation depths
+    #         forces: List of forces
+    #         p_ratio: Poisson ratio
+    #         well_name: Name of the well
+    #     Returns:
+    #         Dictionary with analysis results or None if analysis fails
+    #     """
+    #     if len(depths) < 10:
+    #         print(f"❌ Not enough data points for well {well_name}")
+    #         return None
         
-        # Calculate approximate sample height (assuming contact at first depth)
-        if depths:
-            approx_height = self.calculate_approx_height(-depths[0])  # Convert depth to Z position
-        else:
-            approx_height = 5.0  # Default height
+    #     # Calculate approximate sample height (assuming contact at first depth)
+    #     if depths:
+    #         approx_height = self.calculate_approx_height(-depths[0])  # Convert depth to Z position
+    #     else:
+    #         approx_height = 5.0  # Default height
         
-        print(f"📏 Approximate sample height: {approx_height:.1f} mm")
+    #     print(f"📏 Approximate sample height: {approx_height:.1f} mm")
         
-        # Get data in analysis range
-        depth_in_range, force_in_range = self.find_d_and_f_in_range(depths, forces)
+    #     # Get data in analysis range
+    #     depth_in_range, force_in_range = self.find_d_and_f_in_range(depths, forces)
         
-        if len(depth_in_range) < 5:
-            print(f"❌ Not enough data points in analysis range for well {well_name}")
-            return None
+    #     if len(depth_in_range) < 5:
+    #         print(f"❌ Not enough data points in analysis range for well {well_name}")
+    #         return None
         
-        # Check force range
-        if max(force_in_range) - min(force_in_range) < 0.04:
-            print(f"❌ Force range too small for well {well_name}")
-            return None
+    #     # Check force range
+    #     if max(force_in_range) - min(force_in_range) < 0.04:
+    #         print(f"❌ Force range too small for well {well_name}")
+    #         return None
         
-        # Perform iterative depth adjustment
-        print(f"🔄 Performing iterative depth adjustment for well {well_name}...")
-        final_A, final_d0, converged = self.iterative_depth_adjustment(
-            depths, forces, p_ratio, approx_height
-        )
+    #     # Perform iterative depth adjustment
+    #     print(f"🔄 Performing iterative depth adjustment for well {well_name}...")
+    #     final_A, final_d0, converged = self.iterative_depth_adjustment(
+    #         depths, forces, p_ratio, approx_height
+    #     )
         
-        if not converged:
-            print(f"⚠️ Depth adjustment did not converge for well {well_name}")
+    #     if not converged:
+    #         print(f"⚠️ Depth adjustment did not converge for well {well_name}")
         
-        # Calculate elastic modulus
-        E = self.find_E(final_A, p_ratio)
-        E = self.adjust_E(E)
-        E = round(E)
+    #     # Calculate elastic modulus
+    #     E = self.find_E(final_A, p_ratio)
+    #     E = self.adjust_E(E)
+    #     E = round(E)
         
-        # Calculate uncertainty (simplified)
-        uncertainty = round(E * 0.1)  # 10% uncertainty estimate
+    #     # Calculate uncertainty (simplified)
+    #     uncertainty = round(E * 0.1)  # 10% uncertainty estimate
         
-        # Check depth range
-        max_depth = max(depth_in_range)
-        if max_depth < 0.4:
-            print(f"⚠️ Sample was not indented far enough (max depth: {max_depth:.2f} mm)")
+    #     # Check depth range
+    #     max_depth = max(depth_in_range)
+    #     if max_depth < 0.4:
+    #         print(f"⚠️ Sample was not indented far enough (max depth: {max_depth:.2f} mm)")
         
-        # Prepare results
-        results = {
-            'well': well_name,
-            'elastic_modulus': E,
-            'uncertainty': uncertainty,
-            'poisson_ratio': p_ratio,
-            'sample_height': approx_height,
-            'fit_A': final_A,
-            'fit_d0': final_d0,
-            'converged': converged,
-            'depth_range': (min(depth_in_range), max(depth_in_range)),
-            'force_range': (min(force_in_range), max(force_in_range)),
-            'data_points': len(depth_in_range)
-        }
+    #     # Prepare results
+    #     results = {
+    #         'well': well_name,
+    #         'elastic_modulus': E,
+    #         'uncertainty': uncertainty,
+    #         'poisson_ratio': p_ratio,
+    #         'sample_height': approx_height,
+    #         'fit_A': final_A,
+    #         'fit_d0': final_d0,
+    #         'converged': converged,
+    #         'depth_range': (min(depth_in_range), max(depth_in_range)),
+    #         'force_range': (min(force_in_range), max(force_in_range)),
+    #         'data_points': len(depth_in_range)
+    #     }
         
-        print(f"✅ Analysis complete for well {well_name}: E = {E} Pa")
-        return results
+    #     print(f"✅ Analysis complete for well {well_name}: E = {E} Pa")
+    #     return results
     
-    def find_d_and_f_in_range(self, depths: List[float], forces: List[float], min_depth: float = 0.1, max_depth: float = 1.0) -> Tuple[List[float], List[float]]:
-        """Select data within specified depth range for analysis.
+    # def find_d_and_f_in_range(self, depths: List[float], forces: List[float], min_depth: float = 0.1, max_depth: float = 1.0) -> Tuple[List[float], List[float]]:
+    #     """Select data within specified depth range for analysis.
         
-        Args:
-            depths: List of indentation depths
-            forces: List of forces
-            min_depth: Minimum depth for analysis
-            max_depth: Maximum depth for analysis
-        Returns:
-            Tuple of (depths_in_range, forces_in_range)
-        """
-        depths_in_range = []
-        forces_in_range = []
+    #     Args:
+    #         depths: List of indentation depths
+    #         forces: List of forces
+    #         min_depth: Minimum depth for analysis
+    #         max_depth: Maximum depth for analysis
+    #     Returns:
+    #         Tuple of (depths_in_range, forces_in_range)
+    #     """
+    #     depths_in_range = []
+    #     forces_in_range = []
         
-        for i in range(len(depths)):
-            if min_depth <= depths[i] <= max_depth:
-                depths_in_range.append(depths[i])
-                forces_in_range.append(forces[i])
+    #     for i in range(len(depths)):
+    #         if min_depth <= depths[i] <= max_depth:
+    #             depths_in_range.append(depths[i])
+    #             forces_in_range.append(forces[i])
         
-        return depths_in_range, forces_in_range
+    #     return depths_in_range, forces_in_range
+    
+    # ============================================================================
+    # ITERATIVE REFINEMENT METHODS
+    # ============================================================================
     
     def iterative_depth_adjustment(self, depths: List[float], forces: List[float], p_ratio: float, approx_height: float, max_iterations: int = 100, d0_tolerance: float = 0.01) -> Tuple[float, float, bool]:
         """Perform iterative depth adjustment to refine contact point.
@@ -871,8 +970,8 @@ class IndentationAnalyzer:
             print("❌ Not enough data points in analysis range")
             return 0.0, 0.0, False
         
-        # Apply force correction
-        adjusted_forces = self.adjust_force(depth_in_range, force_in_range, p_ratio, approx_height)
+        # Apply force correction (disabled) - use raw forces directly
+        adjusted_forces = force_in_range
         
         # Convert to numpy arrays for fitting
         depth_array = np.array(depth_in_range)
@@ -910,8 +1009,8 @@ class IndentationAnalyzer:
                 print("❌ Not enough data points after adjustment")
                 return 0.0, 0.0, False
             
-            # Recalculate force correction with new depths
-            adjusted_forces = self.adjust_force(depth_in_range, force_in_range, p_ratio, approx_height)
+            # Recalculate force correction with new depths (disabled)
+            adjusted_forces = force_in_range
             
             # Convert to numpy arrays
             depth_array = np.array(depth_in_range)
@@ -949,7 +1048,9 @@ class IndentationAnalyzer:
         
         return fit_A, fit_d0, converged
         
-    # === PLOTTING FUNCTIONS ===
+    # ============================================================================
+    # PLOTTING METHODS
+    # ============================================================================
     
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
         """Plot raw data (absolute values) for all wells in a single plot"""
@@ -972,7 +1073,41 @@ class IndentationAnalyzer:
         plotter.plot_results(result, save_plot, run_folder)
 
 
+    # ============================================================================
+    # UTILITY METHODS
+    # ============================================================================
+    
+    def find_simple_contact_point(self, corrected_forces: List[float], threshold: float) -> int:
+        """Find contact point using simple force threshold"""
+        for i, force in enumerate(corrected_forces):
+            if abs(force) > threshold:
+                return i
+        return 0
+    
+    def calculate_uncertainty(self, covariance: np.ndarray, n_points: int) -> float:
+        """Calculate uncertainty from covariance matrix"""
+        if covariance is not None and len(covariance) > 0:
+            err = np.sqrt(np.diag(covariance))
+            return float(err[0]) if len(err) > 0 else 0.0
+        return 0.0
+    
+    def calculate_r_squared(self, y_actual: np.ndarray, y_predicted: np.ndarray) -> float:
+        """Calculate R-squared value"""
+        if len(y_actual) == 0 or len(y_predicted) == 0:
+            return 0.0
+        
+        ss_res = np.sum((y_actual - y_predicted) ** 2)
+        ss_tot = np.sum((y_actual - np.mean(y_actual)) ** 2)
+        
+        if ss_tot == 0:
+            return 0.0
+        
+        return 1 - (ss_res / ss_tot)
 
+
+# ============================================================================
+# MAIN EXECUTION AND COMMAND LINE INTERFACE
+# ============================================================================
 
 def main():
     """Main analysis function (non-interactive, argument-based)"""
@@ -1057,200 +1192,6 @@ def main():
     else:
         print("❌ Analysis failed")
 
+
 if __name__ == "__main__":
     main()
-
-    def analyze_well_with_contact_method(self, well: str, contact_method: str = "true_contact", poisson_ratio: Optional[float] = None, filename: Optional[str] = None, contact_force_threshold: float = 2.0, retrospective_threshold: float = 0.05) -> Optional[AnalysisResult]:
-        """
-        Complete analysis for a single well with selectable contact detection method.
-        
-        Args:
-            well: Well identifier
-            contact_method: Contact detection method:
-                - "true_contact": Use find_true_contact_point (default sophisticated method)
-                - "simple_threshold": Use simple force threshold
-                - "retrospective": Use retrospective contact detection (find lowest force point)
-                - "metadata": Use contact point from CSV metadata (if available)
-            poisson_ratio: Poisson's ratio (auto-determined if None)
-            filename: CSV file path for auto-determining Poisson's ratio
-            contact_force_threshold: Force threshold for simple_threshold method
-            retrospective_threshold: Force threshold for retrospective method
-            
-        Returns:
-            AnalysisResult object or None if analysis fails
-        """
-        print(f"\n🔬 Analyzing well {well} using {contact_method} contact detection...")
-        
-        # Auto-determine Poisson's ratio if not provided
-        if poisson_ratio is None and filename:
-            poisson_ratio, material_type = self.determine_poisson_ratio(filename)
-        elif poisson_ratio is None:
-            print("❌ Poisson's ratio must be provided if filename is not available")
-            return None
-        else:
-            material_type = "manual"  # User-specified Poissons ratio
-        
-        if self.data is None:
-            print("❌ No data loaded")
-            return None
-        
-        # Parse CSV data - skip metadata rows and get data rows
-        data_rows = []
-        metadata = {}
-        for row in self.data:
-            if len(row) >= 2:
-                # Collect metadata
-                if len(row) == 2 and not row[0].replace('.', '', 1).replace('-', '', 1).isdigit():
-                    metadata[row[0]] = row[1]
-            # Data rows (those with numeric first column)
-            if len(row) >= 4 and row[0].replace('.', '', 1).replace('-', '', 1).isdigit():
-                data_rows.append(row)
-        
-        if len(data_rows) < 10:
-            print("❌ Not enough data points for analysis")
-            return None
-        
-        # Extract Z positions, raw forces, and corrected forces
-        z_positions = [float(row[1]) for row in data_rows]  # Z_Position(mm)
-        raw_forces = [float(row[2]) for row in data_rows]  # Raw_Force(N)
-        corrected_forces = [float(row[3]) for row in data_rows]  # Corrected_Force(N)
-        
-        # Extract baseline and baseline_std from metadata
-        baseline = float(metadata.get('Baseline_Force(N)', 0.0))
-        baseline_std = float(metadata.get('Baseline_Std(N)', 0.1))
-        
-        # Choose contact detection method
-        first_contact_idx = None
-        
-        if contact_method == "metadata":
-            # Try to use contact point from metadata first
-            if 'Contact_Z(mm)' in metadata:
-                contact_z_meta = float(metadata['Contact_Z(mm)'])
-                # Find the index closest to this Z position
-                for i, z in enumerate(z_positions):
-                    if abs(z - contact_z_meta) < 0.01:  # Within 0.01mm
-                        first_contact_idx = i
-                        print(f"🔍 Using metadata contact point at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm")
-                        break
-                if first_contact_idx is None:
-                    print("⚠️ Metadata contact point not found in data, falling back to true_contact method")
-                    contact_method = "true_contact"
-            else:
-                print("⚠️ No metadata contact point found, falling back to true_contact method")
-                contact_method = "true_contact"
-        
-        if contact_method == "true_contact":
-            # Use the sophisticated true contact detection
-            first_contact_idx = self.find_true_contact_point(z_positions, raw_forces, baseline, baseline_std)
-            print(f"🔍 True contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Raw_Force={raw_forces[first_contact_idx]:.3f}N")
-        
-        elif contact_method == "simple_threshold":
-            # Use simple force threshold detection
-            first_contact_idx = self.find_simple_contact_point(corrected_forces, contact_force_threshold)
-            print(f"�� Simple threshold contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Force_threshold={contact_force_threshold}N")
-        
-        elif contact_method == "retrospective":
-            # Use retrospective contact detection (find first point below threshold, going backwards)
-            first_contact_idx = self.find_retrospective_contact_point(corrected_forces, retrospective_threshold)
-            print(f"🔍 Retrospective contact detected at index {first_contact_idx}: Z={z_positions[first_contact_idx]:.3f}mm, Force_threshold={retrospective_threshold}N")
-        
-        if first_contact_idx is None:
-            print("❌ Contact detection failed")
-            return None
-        
-        # Generate contact detection plot for validation
-        if filename:
-            # Extract run folder name from filename for plot organization
-            run_folder = None
-            for part in filename.split(os.sep):
-                if part.startswith("run_"):
-                    run_folder = part
-                    break
-            
-            self.plot_contact_detection(z_positions, raw_forces, first_contact_idx, well, save_plot=True, run_folder=run_folder, baseline=baseline, baseline_std=baseline_std)
-        
-        # Calculate indentation depths relative to first contact
-        depths, z_contact, shifted_forces = self.calculate_indentation_depth(z_positions, first_contact_idx, corrected_forces)
-        forces = shifted_forces
-        
-        # Filter data to analysis range
-        depth_in_range = []
-        force_in_range = []
-        for d, f in zip(depths, forces):
-            if 0 <= d <= self.INDENTATION_DEPTH_THRESHOLD:
-                depth_in_range.append(d)
-                force_in_range.append(f)
-        
-        if len(depth_in_range) < 5:
-            print("❌ Not enough data points in analysis range")
-            return None
-        
-        # Remove the last point if it exceeds force limit
-        if len(force_in_range) > 1 and abs(force_in_range[-1]) > self.FORCE_LIMIT:
-            print(f"⚠️ Removing last point (force: {force_in_range[-1]:.2f}N) as it exceeds force limit")
-            depth_in_range = depth_in_range[:-1]
-            force_in_range = force_in_range[:-1]
-        
-        # Calculate approximate height
-        approx_height = self.calculate_approx_height(z_contact)
-        
-        # Apply simulation-based force adjustment
-        adjusted_forces = self.adjust_force(depth_in_range, force_in_range, float(poisson_ratio), approx_height)
-        
-        # Fit Hertzian model (both A and d0)
-        depths_array = np.array(depth_in_range)
-        adjusted_forces_array = np.array(adjusted_forces)
-        
-        params, covariance, hertz_func = self.fit_hertz_model(depths_array, adjusted_forces_array)
-        if params is None:
-            print("❌ Curve fitting failed")
-            return None
-        
-        fit_A = float(params[0])
-        fit_d0 = float(params[1])
-        
-        # Calculate elastic modulus
-        E = self.find_E(fit_A, poisson_ratio)
-        E = self.adjust_E(E)  # Apply empirical correction
-        E = round(E)
-        
-        # Calculate uncertainty
-        uncertainty = self.calculate_uncertainty(covariance, len(depth_in_range)) if covariance is not None else E * 0.1
-        uncertainty = round(uncertainty)
-        
-        # Calculate R-squared
-        y_predicted = [hertz_func(d) for d in depths_array]
-        r_squared = self.calculate_r_squared(adjusted_forces_array, y_predicted)
-        
-        # Return analysis result with contact method info
-        return AnalysisResult(
-            well=well,
-            elastic_modulus=E,
-            uncertainty=uncertainty,
-            poisson_ratio=poisson_ratio,
-            sample_height=approx_height,
-            fit_quality=r_squared,
-            depth_range=(min(depth_in_range), max(depth_in_range)),
-            fit_A=fit_A,
-            fit_d0=fit_d0,
-            adjusted_forces=adjusted_forces,
-            depth_in_range=depth_in_range,
-            material_type=f"{material_type}_{contact_method}",  # Include contact method in material type
-            contact_z=z_contact,
-            contact_force=raw_forces[first_contact_idx]
-        )
-
-    def find_simple_contact_point(self, corrected_forces: List[float], threshold: float) -> int:
-        """Find contact using simple force threshold detection"""
-        for i, force in enumerate(corrected_forces):
-            if abs(force) > threshold:
-                return i
-        return 0  # Default to first point if no contact detected
-
-    def find_retrospective_contact_point(self, corrected_forces: List[float], threshold: float) -> int:
-        """Find contact using retrospective detection (go backwards from end)"""
-        # Start from the end and work backwards to find first point below threshold
-        for i in range(len(corrected_forces) - 1, -1, -1):
-            if abs(corrected_forces[i]) <= threshold:
-                return i
-        return 0  # Default to first point if all forces exceed threshold

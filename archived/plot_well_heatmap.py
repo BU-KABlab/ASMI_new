@@ -5,11 +5,11 @@ Input: summary CSV with columns 'Well', 'ElasticModulus', and optionally 'R2'.
 """
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches # for circles
+import matplotlib.colors as mcolors # for colorbar
 import numpy as np
-import string
-import sys
+import string # for rows and columns
+import sys # for command line arguments
 
 plt.rcParams['font.family'] = 'Arial'  # Set global font to Arial
 

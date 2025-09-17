@@ -19,7 +19,7 @@ from src.force_monitoring import (
     simple_indentation_with_return_measurement,
     get_and_increment_run_count,
 )
-from src.analysis_2 import IndentationAnalyzer
+from src.analysis import IndentationAnalyzer
 from src.plot import plotter
 
 

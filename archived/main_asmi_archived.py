@@ -4,14 +4,18 @@ ASMI - Automated Sample Measurement Interface
 Main entry point for the ASMI system
 """
 
+from operator import truediv
+from tkinter import TRUE
 from src.CNCController import CNCController
 from src.ForceSensor import ForceSensor
-from src.force_monitoring import test_step_force_measurement, dynamic_indentation_measurement
+from src.force_monitoring import test_step_force_measurement, dynamic_indentation_measurement, dynamic_indentation_with_retrospective_contact
 from src.analysis import IndentationAnalyzer
+from src.plot import plotter
 import time
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
+import csv
 
 class ASMI:
     def __init__(self):
@@ -34,29 +38,14 @@ class ASMI:
         print(f"📁 Created run folder: {self.current_run_folder}")
         return self.current_run_folder
 
-    def run_experiment(self, well_name: str, step_size: float = 0.2, force_limit: float = 45.0, z_target: float = -18.0):
-        col, row = well_name[0], well_name[1:]
-        try:
-            print(f"\n🧪 Starting experiment at well {well_name}")
-            self.cnc.move_to_well(col, row)
-            self.cnc.move_to_z(-9.5, feedrate=1000)
-            ok = test_step_force_measurement(self.cnc, self.force_sensor, well=well_name, target_z=z_target, step_size=step_size, force_limit=force_limit, run_folder=self.current_run_folder)
-            if not ok:
-                print("⚠️ Measurement failed")
-                return False
-            print(f"✅ Experiment at well {well_name} completed successfully")
-            return True
-        except Exception as e:
-            print(f"❌ Error during experiment at well {well_name}: {e}")
-            return False
-
-    def run_dynamic_experiment(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0):
+    def run_dynamic_experiment(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0, contact_detection_depth: float = 1.0, use_sophisticated_detection: bool = False, stop_after_contact: bool = True, contact_force_threshold: float = 2.0):
         """Run experiment with dynamic indentation control"""
         col, row = well_name[0], well_name[1:]
         try:
             print(f"\n🧪 Starting dynamic experiment at well {well_name}")
             self.cnc.move_to_well(col, row)
-            self.cnc.move_to_z(-9.5, feedrate=1000)
+            self.cnc.move_to_z(-8.0, feedrate=1000)
+            self.cnc.wait_for_idle()  # Wait for movement to well top to complete
             
             ok = dynamic_indentation_measurement(
                 self.cnc, 
@@ -65,6 +54,10 @@ class ASMI:
                 z_target=z_target, 
                 step_size=step_size, 
                 force_limit=force_limit,
+                contact_detection_depth=contact_detection_depth,
+                use_sophisticated_detection=use_sophisticated_detection,
+                stop_after_contact=stop_after_contact,
+                contact_force_threshold=contact_force_threshold,  # ← Add this
                 run_folder=self.current_run_folder
             )
             
@@ -152,10 +145,51 @@ class ASMI:
             print(f"❌ Analysis failed for well {well_name}")
             return None
 
-    def run_experiment_with_analysis(self, well_name: str, step_size: float = 0.2, force_limit: float = 45.0, poisson_ratio: Optional[float] = None, z_target: float = -18.0):
-        """Run experiment and immediately analyze the results"""
-        # Run the experiment
-        success = self.run_experiment(well_name, step_size, force_limit, z_target)
+    def run_dynamic_experiment_with_analysis(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0, poisson_ratio: Optional[float] = None, contact_detection_depth: float = 1.0, use_sophisticated_detection: bool = False, stop_after_contact: bool = True, contact_force_threshold: float = 2.0):
+        """Run dynamic experiment and immediately analyze the results"""
+        # Run the dynamic experiment
+        success = self.run_dynamic_experiment(well_name, z_target, step_size, force_limit, contact_detection_depth, use_sophisticated_detection, stop_after_contact, contact_force_threshold)  # ← Add this
+        if success:
+            # Wait a moment for file system to update
+            time.sleep(0.5)
+            result = self.analyze_experiment_data(well_name, poisson_ratio)
+            return success, result
+        return False, None
+
+
+    def run_retrospective_contact_experiment(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0, contact_threshold: float = 0.05):
+        """Run experiment with retrospective contact detection"""
+        col, row = well_name[0], well_name[1:]
+        try:
+            print(f"\n🧪 Starting retrospective contact experiment at well {well_name}")
+            self.cnc.move_to_well(col, row)
+            self.cnc.move_to_z(-8.0, feedrate=1000)
+            self.cnc.wait_for_idle()
+            
+            ok = dynamic_indentation_with_retrospective_contact(
+                self.cnc, 
+                self.force_sensor, 
+                well=well_name, 
+                z_target=z_target, 
+                step_size=step_size, 
+                force_limit=force_limit,
+                contact_threshold=contact_threshold,
+                run_folder=self.current_run_folder
+            )
+            
+            if not ok:
+                print("⚠️ Retrospective contact measurement failed")
+                return False
+            print(f"✅ Retrospective contact experiment at well {well_name} completed successfully")
+            return True
+        except Exception as e:
+            print(f"❌ Error during retrospective contact experiment at well {well_name}: {e}")
+            return False
+
+    def run_retrospective_contact_experiment_with_analysis(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0, contact_threshold: float = 0.05, poisson_ratio: Optional[float] = None):
+        """Run retrospective contact experiment and immediately analyze the results"""
+        # Run the retrospective contact measurement
+        success = self.run_retrospective_contact_experiment(well_name, z_target, step_size, force_limit, contact_threshold)
         if success:
             # Wait a moment for file system to update
             time.sleep(0.5)
@@ -165,18 +199,33 @@ class ASMI:
         else:
             return False, None
 
-    def run_dynamic_experiment_with_analysis(self, well_name: str, z_target: float = -18.0, step_size: float = 0.1, force_limit: float = 45.0, poisson_ratio: Optional[float] = None):
-        """Run dynamic experiment and immediately analyze the results"""
-        # Run the dynamic experiment
-        success = self.run_dynamic_experiment(well_name, z_target, step_size, force_limit)
-        if success:
-            # Wait a moment for file system to update
-            time.sleep(0.5)
-            # Analyze the data
-            result = self.analyze_experiment_data(well_name, poisson_ratio)
-            return success, result
-        else:
-            return False, None
+    def recover_cnc(self):
+        """Recover CNC from alarm state"""
+        print("🔄 Attempting to recover CNC from alarm state...")
+        
+        try:
+            # Try to unlock first
+            if self.cnc.unlock():
+                print("✅ CNC unlocked successfully")
+            else:
+                print("⚠️ Unlock failed, trying full reset...")
+                self.cnc.reset_grbl()
+            
+            # Wait a moment for reset to complete
+            time.sleep(2)
+            
+            # Check if CNC is responsive
+            current_pos = self.cnc.get_current_position()
+            if current_pos:
+                print(f"✅ CNC recovered! Current position: X={current_pos[0]:.3f}, Y={current_pos[1]:.3f}, Z={current_pos[2]:.3f}")
+                return True
+            else:
+                print("❌ CNC still not responsive after recovery attempt")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error during CNC recovery: {e}")
+            return False
 
     def cleanup(self):
         print("\n🧹 Cleaning up ASMI system...")
@@ -186,10 +235,17 @@ class ASMI:
             print("✅ Cleanup completed")
         except Exception as e:
             print(f"⚠️ Error during cleanup: {e}")
+            
+            
+            
+            
 
 def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None, 
-         step_size: float = 0.2, force_limit: float = 40.0, z_target: float = -18.0, 
-         use_dynamic: bool = False):
+         coarse_step_size: float = 0.5, fine_step_size: float = 0.02, fine_steps: int = 50,
+         force_limit: float = 40.0, z_target: float = -18.0, 
+         fine_sleep_time: float = 0.01, contact_detection_depth: float = 1.0, 
+         use_sophisticated_detection: bool = False, stop_after_contact: bool = True, 
+         contact_force_threshold: float = 0.5, find_contact_retrospectively: bool = False):
     asmi = None
     results = []
     
@@ -198,8 +254,7 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
     start_time = time.time()
     print(f"🚀 Starting ASMI experiment run at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📋 Total wells to test: {len(wells_to_test)}")
-    print(f"⚙️  Parameters: step_size={step_size}mm, force_limit={force_limit}N, z_target={z_target}mm")
-    print(f"🔧 Mode: {'Dynamic' if use_dynamic else 'Step'} indentation")
+    print(f"⚙️  Parameters: step_size={fine_step_size}mm, force_limit={force_limit}N, z_target={z_target}mm")
     print("=" * 60)
     
     try:
@@ -214,21 +269,34 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
             print(f"\n🔬 Processing well {well} ({i+1}/{len(wells_to_test)})...")
             
             if auto_analyze:
-                if use_dynamic:
-                    success, result = asmi.run_dynamic_experiment_with_analysis(
-                        well, z_target, step_size, force_limit, poisson_ratio
+                if find_contact_retrospectively:
+                    success, result = asmi.run_retrospective_contact_experiment_with_analysis(
+                        well_name=well,
+                        z_target=z_target,
+                        step_size=fine_step_size,
+                        force_limit=force_limit,
+                        contact_threshold=0.05,  # Threshold for retrospective contact detection
+                        poisson_ratio=poisson_ratio
                     )
-                else:
-                    success, result = asmi.run_experiment_with_analysis(well, step_size, force_limit, poisson_ratio, z_target)
                 if result:
                     results.append(result)
-            else:
-                if use_dynamic:
-                    success = asmi.run_dynamic_experiment(well, z_target, step_size, force_limit)
+                    print(f"✅ Analysis completed successfully for well {well}")
+                    print(f"🔍 Debug: Added result type = {type(result)} to results list")
+                elif success:
+                    print(f"✅ Measurement completed for well {well} (analysis failed)")
+                    print(f"🔍 Debug: result type = {type(result)}, result = {result}")
                 else:
-                    success = asmi.run_experiment(well, step_size, force_limit, z_target)
-                if success:
-                    # Wait a moment for file system to update
+                    print(f"❌ Measurement failed for well {well}")
+            else:
+                # Only run measurement without analysis
+                success = asmi.run_dynamic_experiment(
+                    well, z_target, fine_step_size, force_limit, 
+                    contact_detection_depth, use_sophisticated_detection, stop_after_contact,
+                    contact_force_threshold
+                )
+                
+                # Only analyze if measurement succeeded AND we want analysis
+                if success and auto_analyze:
                     time.sleep(0.5)
                     result = asmi.analyze_experiment_data(well, poisson_ratio)
                     if result:
@@ -240,6 +308,9 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
             if not success:
                 print(f"⚠️ Stopping due to failure at well {well}")
                 break
+        
+        # NOTE: Retrospective contact detection is already handled in the main experiment loop above
+        # The find_contact_retrospectively parameter enables it in each individual experiment
         
         # Generate raw data plot for all wells
         if results and asmi.current_run_folder:
@@ -297,11 +368,10 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
                     f.write(f"Start Time: {timing_info['start_time']}\n")
                     f.write(f"End Time: {timing_info['end_time']}\n")
                     f.write(f"Parameters:\n")
-                    f.write(f"  Step Size: {step_size} mm\n")
+                    f.write(f"  Step Size: {fine_step_size} mm\n")
                     f.write(f"  Force Limit: {force_limit} N\n")
                     f.write(f"  Z Target: {z_target} mm\n")
-                    f.write(f"  Contact Threshold: 2.0 N\n")
-                    f.write(f"  Dynamic Mode: {use_dynamic}\n")
+                    f.write(f"  Contact Threshold: {contact_force_threshold} N\n")
                 print(f"💾 Timing information saved to: {timing_filename}")
                 
                 # Get the run folder name
@@ -336,13 +406,62 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
                 print(f"⚠️ Could not import required modules for heatmap creation: {e}")
             except Exception as e:
                 print(f"⚠️ Error creating heatmap: {e}")
+        else:
+            print(f"\n📈 Skipping summary CSV and heatmap creation (no results)")
+            if not results:
+                print(f"   Reason: No analysis results available")
+            if not asmi.current_run_folder:
+                print(f"   Reason: No current run folder")
+        
+        # Generate UV exposure analysis plot
+        if results and asmi.current_run_folder:
+            print(f"\n🔬 Generating UV exposure analysis plot...")
+            try:
+                # Import UV exposure analysis functions
+                from plot_uv_exposure_analysis import analyze_uv_exposure_data
+                
+                # Get the run folder name
+                run_folder_name = os.path.basename(asmi.current_run_folder)
+                
+                # Generate UV exposure plot
+                uv_success = analyze_uv_exposure_data(run_folder_name)
+                
+                if uv_success:
+                    print(f"✅ UV exposure analysis completed successfully!")
+                else:
+                    print(f"⚠️ UV exposure analysis failed or no data available")
+                    
+            except ImportError as e:
+                print(f"⚠️ Could not import UV exposure analysis modules: {e}")
+            except Exception as e:
+                print(f"⚠️ Error creating UV exposure plot: {e}")
+        else:
+            print(f"\n🔬 Skipping UV exposure analysis (no results)")
+            if not results:
+                print(f"   Reason: No analysis results available")
+            if not asmi.current_run_folder:
+                print(f"   Reason: No current run folder")
         
         # Print summary of all results
         if results:
             print(f"\n📋 Summary of All Results:")
             print("=" * 60)
             for result in results:
-                print(f"Well {result.well}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality}")
+                if hasattr(result, 'well'):
+                    # AnalysisResult object
+                    print(f"Well {result.well}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality}")
+                elif isinstance(result, dict):
+                    # Dictionary from original analysis method
+                    well_name = result.get('well', 'Unknown')
+                    elastic_modulus = result.get('elastic_modulus', 'N/A')
+                    print(f"Well {well_name}: E = {elastic_modulus} Pa (Original Method)")
+                else:
+                    print(f"Unknown result type: {type(result)}")
+            print("=" * 60)
+        else:
+            print(f"\n📋 Summary of All Results:")
+            print("=" * 60)
+            print("No successful analysis results to display")
             print("=" * 60)
         
         print(f"\n🎉 All experiments completed!")
@@ -375,16 +494,64 @@ def main(wells_to_test, auto_analyze=True, poisson_ratio: Optional[float] = None
             asmi.cleanup()
 
 if __name__ == "__main__":
-    # Example usage - modify these parameters as needed
-    wells_to_test = ['A6', 'B6', 'C6', 'C5', 'B5', 'A5', 'D5', 'D6', 'D7', 'E7', 'E6', 'E5', 'F5', 'F4', 'F3', 'G3', 'G4']
+    # Analyze existing data from run_440_20250905_103414
+    print("🔬 Analyzing existing data from run_440_20250905_103414")
+    print("=" * 60)
     
-    # Run experiments with default parameters
-    main(
-        wells_to_test=wells_to_test,
-        auto_analyze=True,
-        poisson_ratio=None,  # Auto-detect based on force limit
-        step_size=0.1,
-        force_limit=25.0,
-        z_target=-15.0,
-        use_dynamic=True  # Set to True for dynamic indentation
-    )
+    # Wells available in run_440_20250905_103414
+    wells_to_analyze = ['F10', 'F11', 'F12', 'G10', 'G11', 'G12', 'H10']
+    
+    # Use analyzer directly without hardware initialization
+    from src.analysis import IndentationAnalyzer
+    analyzer = IndentationAnalyzer()
+    
+    results = []
+    
+    try:
+        for well in wells_to_analyze:
+            print(f"\n🔬 Analyzing well {well}...")
+            
+            # Find the data file for this well
+            data_dir = "results/measurements"
+            run_path = os.path.join(data_dir, "run_440_20250905_103414")
+            
+            well_files = [f for f in os.listdir(run_path) if f.startswith(f"well_{well}_") and f.endswith(".csv")]
+            if not well_files:
+                print(f"❌ No data file found for well {well}")
+                continue
+            
+            # Get the most recent file for this well
+            latest_file = max(well_files, key=lambda x: os.path.getctime(os.path.join(run_path, x)))
+            filepath = os.path.join(run_path, latest_file)
+            
+            print(f"📁 Analyzing file: {filepath}")
+            
+            # Load and analyze the data
+            if not analyzer.load_data(filepath):
+                print(f"❌ Failed to load data from {filepath}")
+                continue
+            
+            # Analyze the well using the standard method
+            result = analyzer.analyze_well(well, poisson_ratio=0.33, filename=filepath)
+            if result:
+                results.append(result)
+                print(f"✅ Well {well} analyzed successfully")
+                print(f"   Elastic Modulus: {result.elastic_modulus} Pa")
+                print(f"   Fit Quality (R²): {result.fit_quality:.3f}")
+                print(f"   Contact Point: Z={result.contact_z:.3f} mm")
+            else:
+                print(f"❌ Well {well} analysis failed")
+        
+        # Print summary
+        if results:
+            print(f"\n📋 Analysis Summary:")
+            print("=" * 60)
+            for result in results:
+                print(f"Well {result.well}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality:.3f}, Contact Z = {result.contact_z:.3f} mm")
+        else:
+            print("❌ No wells were successfully analyzed")
+            
+    except Exception as e:
+        print(f"❌ Error during analysis: {e}")
+        import traceback
+        traceback.print_exc()
