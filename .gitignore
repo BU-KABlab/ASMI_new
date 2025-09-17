@@ -4,5 +4,14 @@ results/measurements/**
 results/plots/**
 !results/plots/.gitkeep
 
+# Archived files (local only)
+archived/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # macOS
 .DS_Store
