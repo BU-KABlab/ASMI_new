@@ -300,8 +300,27 @@ def main(
     well_top_z: float = -9.0,
     existing_measured_with_return: bool = True,
     show_version: bool = False,
+    move_to_pickup: bool = False,
+    pickup_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ):
-    """Parameter-based entry point."""
+    """Parameter-based entry point.
+    
+    Args:
+        do_measure: Whether to perform measurements (True) or analyze existing data (False)
+        wells_to_test: List of wells to measure (e.g., ["A1", "A2", "B1"])
+        contact_method: Contact detection method ("extrapolation", "retrospective", "simple_threshold")
+        existing_run_folder: Folder name for existing data analysis
+        generate_heatmap: Generate heatmaps after measurements
+        measure_with_return: Enable return measurements (up/down)
+        z_target: Target indentation depth (mm)
+        step_size: Movement step size (mm)
+        force_limit: Force limit (N)
+        well_top_z: Well top position before indentation (mm)
+        existing_measured_with_return: Whether existing data has return measurements
+        show_version: Display version information and exit
+        move_to_pickup: Move to pickup position after measurements
+        pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
+    """
     
     if show_version:
         print_version()
@@ -352,11 +371,28 @@ def main(
                 print("⚠️ No run folder detected; skipping heatmap")
                 return
         finally:
-            # Home once after all measurements are completed
+            # Move to pickup position if requested, otherwise home
             try:
-                cnc.home(zero_after=True)
+                if move_to_pickup:
+                    print(f"🎯 Moving to pickup position: {pickup_position}")
+                    # Use the existing pickup method for Y position, then move to X,Z if needed
+                    cnc.move_to_pickup_position(y_position=pickup_position[1])
+                    # Move to specific X and Z coordinates if not at default values
+                    if pickup_position[0] != 0.0 or pickup_position[2] != 0.0:
+                        gcode = f"G01 X{pickup_position[0]:.3f} Y{pickup_position[1]:.3f} Z{pickup_position[2]:.3f} F{cnc.FEEDRATE}"
+                        cnc.send_gcode(gcode)
+                        cnc.wait_for_idle()
+                    print(f"✅ Positioned at pickup location: X={pickup_position[0]:.1f}, Y={pickup_position[1]:.1f}, Z={pickup_position[2]:.1f}")
+                else:
+                    cnc.home(zero_after=True)
             except Exception as e:
-                print(f"⚠️ Homing error after batch: {e}")
+                print(f"⚠️ Error moving to final position: {e}")
+                # Fallback to homing if pickup movement fails
+                try:
+                    print("🔄 Attempting to home as fallback...")
+                    cnc.home(zero_after=True)
+                except Exception as e2:
+                    print(f"⚠️ Homing fallback also failed: {e2}")
     else:
         if not existing_run_folder:
             print("❌ existing_run_folder must be provided when do_measure=False")
@@ -453,6 +489,8 @@ def run_main_at_intervals(
     generate_heatmap: bool = True,
     start_delay: float = 0.0,
     stop_on_error: bool = False,
+    move_to_pickup: bool = False,
+    pickup_position: tuple[float, float, float] = (0.0, 140.0, 0.0),
 ):
     """Run main measurement cycles at regular intervals with enhanced error handling and timing.
     
@@ -469,6 +507,8 @@ def run_main_at_intervals(
         generate_heatmap: Generate heatmaps after each cycle
         start_delay: Initial delay before first cycle (seconds)
         stop_on_error: Stop all cycles if one fails (vs continue)
+        move_to_pickup: Move to pickup position after each cycle
+        pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
     """
     print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
     print(f"📍 Wells: {wells_to_test}")
@@ -512,6 +552,8 @@ def run_main_at_intervals(
                     force_limit=force_limit,
                     well_top_z=well_top_z,
                     generate_heatmap=generate_heatmap,
+                    move_to_pickup=move_to_pickup,
+                    pickup_position=pickup_position,
                 )
                 
                 cycle_duration = time.time() - cycle_actual_start
@@ -576,7 +618,17 @@ if __name__ == "__main__":
     #     contact_method="extrapolation",
     #     measure_with_return=True,
     #     start_delay=10.0,       # 10 second initial delay
-    #     stop_on_error=False     # Continue even if one cycle fails
+    #     stop_on_error=False,    # Continue even if one cycle fails
+    #     move_to_pickup=True,    # Move to pickup position after each cycle
+    #     pickup_position=(0.0, 140.0, 10.0)  # X, Y, Z coordinates
+    # )
+    
+    # Example with pickup position:
+    # main(
+    #     do_measure=True,
+    #     wells_to_test=["A1", "A2"],
+    #     move_to_pickup=True,
+    #     pickup_position=(0.0, 140.0, 10.0)  # Move to pickup after measurements
     # )
     
     # Home the machine if something goes wrong
