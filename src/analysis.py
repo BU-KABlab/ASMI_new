@@ -15,6 +15,7 @@ from collections import namedtuple
 
 import numpy as np
 from scipy.optimize import curve_fit
+from .version import __version__
 
 FitResult = namedtuple("FitResult", ["params", "covariance", "model_func"])
 
@@ -480,7 +481,7 @@ class IndentationAnalyzer:
                         ss_res = np.sum((vf - pred) ** 2)
                         ss_tot = np.sum((vf - np.mean(vf)) ** 2)
                         r2_sub = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        else:
+                    else:
                         r2_sub = 0
                     subset = AnalysisResult(
                         well=well,
@@ -550,7 +551,7 @@ class IndentationAnalyzer:
         try:
             plotter.plot_results(result, save_plot, run_folder, method)
         except TypeError:
-        plotter.plot_results(result, save_plot, run_folder)
+            plotter.plot_results(result, save_plot, run_folder)
 
     # ------------------------------ Utilities -------------------------------
     def split_up_down_post_contact(

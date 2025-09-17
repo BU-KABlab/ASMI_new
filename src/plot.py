@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from datetime import datetime
+from .version import __version__
 from typing import List, Optional, Dict
 from dataclasses import dataclass
 import pandas as pd

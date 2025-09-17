@@ -52,6 +52,12 @@ ASMI_new/
 - GoDirect force sensor (Vernier)
 
 ### Dependencies
+Install all required dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+Or install individually:
 ```bash
 pip install pyserial godirect numpy scipy matplotlib pandas
 ```
@@ -63,6 +69,12 @@ pip install pyserial godirect numpy scipy matplotlib pandas
 4. Calibrate force sensor before first use
 
 ## Quick Start
+
+### Version Information
+```python
+from main_asmi import print_version
+print_version()  # Shows: ASMI v2.0.0 by Hongrui Zhang (MIT License)
+```
 
 ### Basic Measurement
 ```python
@@ -233,12 +245,15 @@ For technical support or questions:
 
 ## Changelog
 
-### Version 2.0
+### Version 2.0.0 (Current)
 - Parameter-based interface
 - Return measurement support
 - Enhanced visualization
 - Improved data management
 - Multiple contact detection methods
+- Comprehensive documentation
+- Version management system
+- Requirements.txt for easy installation
 
 ### Version 1.0
 - Initial release

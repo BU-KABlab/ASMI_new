@@ -12,6 +12,7 @@ import time
 import csv
 import os
 from datetime import datetime
+from .version import __version__
 from .CNCController import CNCController
 from .ForceSensor import ForceSensor
 from .analysis import IndentationAnalyzer

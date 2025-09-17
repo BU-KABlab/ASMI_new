@@ -15,6 +15,7 @@ import threading
 import os
 from datetime import datetime
 from typing import List, Tuple, Optional
+from .version import __version__
 
 # === CNC CONFIGURATION ===
 BAUD_RATE = 115200

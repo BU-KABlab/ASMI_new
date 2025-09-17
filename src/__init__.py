@@ -9,4 +9,7 @@ Date: 09/2025
 License: MIT
 """
 
-# ASMI Source Package 
+from .version import __version__, __version_info__, get_version, get_full_version
+
+# ASMI Source Package
+__all__ = ['__version__', '__version_info__', 'get_version', 'get_full_version'] 

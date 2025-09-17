@@ -25,12 +25,13 @@ from src.force_monitoring import (
 )
 from src.analysis import IndentationAnalyzer
 from src.plot import plotter
+from src.version import get_full_version
 
 
 def ensure_run_folder(base: str = "results/measurements") -> str:
     """Create and return a new run folder path under base."""
     run_count = get_and_increment_run_count(os.path.join("src", "run_count.txt"))
-        run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_folder = os.path.join(base, f"run_{run_count:03d}_{run_date}")
     os.makedirs(run_folder, exist_ok=True)
     return run_folder
@@ -57,7 +58,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
         with open(orig_csv_path, 'r') as f:
             reader = _csv.reader(f)
             rows = [r for r in reader if r]
-        except Exception as e:
+    except Exception as e:
         print(f"⚠️ Failed to read for splitting: {orig_csv_path}: {e}")
         return None, None
 
@@ -151,7 +152,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
 
     if not result:
         print("❌ Analysis failed")
-            return None
+        return None
         
     # Derive run_folder from data path for plotting
     run_folder = None
@@ -176,7 +177,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
         plot_results_via_plotter(result, run_folder, method=method_for_plot, direction_label=dir_label)
     except Exception:
         plot_results_via_plotter(result, run_folder)
-            return result
+    return result
 
 
 def run_measure_analyze_plot(
@@ -281,6 +282,11 @@ def write_summary_csv(run_folder_name: str, results: list):
     return out_csv
 
 
+def print_version():
+    """Print version information."""
+    print(get_full_version())
+
+
 def main(
     do_measure: bool = True,
     wells_to_test: list[str] | None = None,
@@ -293,8 +299,13 @@ def main(
     force_limit: float = 5.0,
     well_top_z: float = -9.0,
     existing_measured_with_return: bool = True,
+    show_version: bool = False,
 ):
     """Parameter-based entry point."""
+    
+    if show_version:
+        print_version()
+        return
 
     results = []
     run_folder_name = None
@@ -425,120 +436,130 @@ def main(
             tmp_analyzer = IndentationAnalyzer()
             tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
             tmp_analyzer.plot_raw_force_individual_wells(run_folder_name, save_plot=True)
-            except Exception as e:
+        except Exception as e:
             print(f"⚠️ Failed to generate raw data plots: {e}")
 
 
-def measure_at_intervals(
+def run_main_at_intervals(
     interval_seconds: float,
     cycles: int,
     wells_to_test: list[str],
     contact_method: str = "extrapolation",
     measure_with_return: bool = False,
-    z_target: float = -17.0,
-    step_size: float = 0.01,
-    force_limit: float = 15.0,
+    z_target: float = -15.0,
+    step_size: float = 0.02,
+    force_limit: float = 5.0,
     well_top_z: float = -9.0,
+    generate_heatmap: bool = True,
+    start_delay: float = 0.0,
+    stop_on_error: bool = False,
 ):
-    """Measure → Analyze → Plot repeatedly at a fixed time gap (homes before first and after last cycle)."""
-    from src.CNCController import CNCController
-    from src.ForceSensor import ForceSensor
-
-    if not wells_to_test:
-        wells_to_test = ["A1"]
-
-    cnc = CNCController()
+    """Run main measurement cycles at regular intervals with enhanced error handling and timing.
+    
+    Args:
+        interval_seconds: Time between cycle starts (seconds)
+        cycles: Number of measurement cycles to run
+        wells_to_test: List of wells to measure in each cycle
+        contact_method: Contact detection method
+        measure_with_return: Enable return measurements
+        z_target: Target indentation depth (mm)
+        step_size: Movement step size (mm)
+        force_limit: Force limit (N)
+        well_top_z: Well top position (mm)
+        generate_heatmap: Generate heatmaps after each cycle
+        start_delay: Initial delay before first cycle (seconds)
+        stop_on_error: Stop all cycles if one fails (vs continue)
+    """
+    print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
+    print(f"📍 Wells: {wells_to_test}")
+    print(f"⚙️ Method: {contact_method}, Return: {measure_with_return}")
+    print(f"🎯 Z-target: {z_target}mm, Step: {step_size}mm, Force limit: {force_limit}N")
+    
+    if start_delay > 0:
+        print(f"⏳ Initial delay: {start_delay:.1f}s...")
+        time.sleep(start_delay)
+    
+    start_time = time.time()
+    successful_cycles = 0
+    failed_cycles = 0
+    
     try:
-        try:
-            if not cnc.home(zero_after=True):
-                print("⚠️ Homing failed or timed out, attempting position sync...")
-                cnc.sync_position()
-        except Exception as e:
-            print(f"⚠️ Homing error: {e}. Proceeding with caution.")
-
-        force_sensor = ForceSensor()
-
-        start0 = time.time()
         for i in range(cycles):
-            cycle_start_target = start0 + i * interval_seconds
-            now = time.time()
-            if now < cycle_start_target:
-                wait_s = cycle_start_target - now
-                print(f"⏳ Waiting {wait_s:.1f}s before cycle {i+1}/{cycles}...")
-                time.sleep(max(0, wait_s))
-
-            print(f"\n▶️ Starting cycle {i+1}/{cycles} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            results = []
-            run_folder_name = None
-
-            for w in [w.upper() for w in wells_to_test]:
-                r, run_folder_name = run_measure_analyze_plot(
-                    cnc=cnc,
-                    force_sensor=force_sensor,
-                    well=w,
+            cycle_num = i + 1
+            cycle_start_time = start_time + i * interval_seconds
+            current_time = time.time()
+            
+            # Calculate wait time for precise timing
+            if current_time < cycle_start_time:
+                wait_time = cycle_start_time - current_time
+                print(f"⏳ Waiting {wait_time:.1f}s before cycle {cycle_num}/{cycles}...")
+                time.sleep(wait_time)
+            
+            cycle_actual_start = time.time()
+            print(f"\n{'='*60}")
+            print(f"▶️ Starting cycle {cycle_num}/{cycles} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*60}")
+            
+            try:
+                # Run the measurement cycle
+                main(
+                    do_measure=True,
+                    wells_to_test=wells_to_test,
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
                     z_target=z_target,
                     step_size=step_size,
                     force_limit=force_limit,
                     well_top_z=well_top_z,
-                    run_folder=os.path.join("results", "measurements", run_folder_name) if run_folder_name else None,
+                    generate_heatmap=generate_heatmap,
                 )
-                if r:
-                    if isinstance(r, list):
-                        results.extend(r)
-                    else:
-                        results.append(r)
-
-            if not run_folder_name:
-                print("⚠️ No run folder detected for this cycle; skipping plotting")
-                continue
-
-            plots_root = os.path.join("results", "plots", run_folder_name)
-            os.makedirs(plots_root, exist_ok=True)
-            wants_split_heatmaps = measure_with_return
-
-            if wants_split_heatmaps:
-                down_results = [r for r in results if r and r.well and r.well.lower().endswith("_down")]
-                up_results = [r for r in results if r and r.well and r.well.lower().endswith("_up")]
-
-                def _write_subset(name: str, subset: list):
-                    out_csv = os.path.join(plots_root, f"summary_{name}.csv")
-                    with open(out_csv, "w", newline="") as f:
-                        w = csv.writer(f)
-                        w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-                        for r in subset:
-                            name_lower = r.well.lower()
-                            if name_lower.endswith("_down"):
-                                well_core = r.well[: -len("_down")]
-                            elif name_lower.endswith("_up"):
-                                well_core = r.well[: -len("_up")]
-                else:
-                                well_core = r.well
-                            w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
-                    return out_csv
-
-                if down_results:
-                    down_csv = _write_subset("down", down_results)
-                    plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
-                if up_results:
-                    up_csv = _write_subset("up", up_results)
-                    plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
-        else:
-                summary_csv = write_summary_csv(run_folder_name, results)
-                plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
-
-            try:
-                tmp_analyzer = IndentationAnalyzer()
-                tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
-                tmp_analyzer.plot_raw_force_individual_wells(run_folder_name, save_plot=True)
+                
+                cycle_duration = time.time() - cycle_actual_start
+                successful_cycles += 1
+                print(f"✅ Cycle {cycle_num} completed in {cycle_duration:.1f}s")
+                
+            except KeyboardInterrupt:
+                print(f"\n🛑 Keyboard interrupt received during cycle {cycle_num}")
+                print(f"📊 Completed {successful_cycles}/{cycles} cycles successfully")
+                raise
+                
             except Exception as e:
-                print(f"⚠️ Failed to generate raw data plots for cycle: {e}")
+                failed_cycles += 1
+                print(f"❌ Cycle {cycle_num} failed: {e}")
+                
+                if stop_on_error:
+                    print(f"🛑 Stopping due to error (stop_on_error=True)")
+                    break
+                else:
+                    print(f"⚠️ Continuing with next cycle...")
+            
+            # Calculate time until next cycle
+            if cycle_num < cycles:
+                next_cycle_time = start_time + cycle_num * interval_seconds
+                current_time = time.time()
+                time_until_next = next_cycle_time - current_time
+                
+                if time_until_next > 0:
+                    print(f"⏳ Waiting {time_until_next:.1f}s until next cycle...")
+                    time.sleep(time_until_next)
+                else:
+                    print(f"⚠️ Running behind schedule by {abs(time_until_next):.1f}s")
+    
+    except KeyboardInterrupt:
+        print(f"\n🛑 Scheduled measurements interrupted by user")
+    
     finally:
-        try:
-            cnc.home(zero_after=True)
-        except Exception as e:
-            print(f"⚠️ Homing error after scheduled cycles: {e}")
+        total_time = time.time() - start_time
+        print(f"\n{'='*60}")
+        print(f"📊 SCHEDULED MEASUREMENTS SUMMARY")
+        print(f"{'='*60}")
+        print(f"✅ Successful cycles: {successful_cycles}/{cycles}")
+        print(f"❌ Failed cycles: {failed_cycles}")
+        print(f"⏱️ Total time: {total_time/60:.1f} minutes")
+        print(f"📈 Success rate: {successful_cycles/cycles*100:.1f}%")
+        print(f"🕐 Average cycle time: {total_time/cycles:.1f}s")
+        print(f"🏁 Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":
@@ -546,9 +567,23 @@ if __name__ == "__main__":
     # main(do_measure=True, wells_to_test=["A1", "A2"], contact_method="extrapolation", measure_with_return=True)
     # Or analyze existing run:
     # main(do_measure=False, existing_run_folder="run_460_20250911_062621", existing_measured_with_return=True)
+    
+    # Example scheduled measurements:
+    # run_main_at_intervals(
+    #     interval_seconds=3600,  # 1 hour
+    #     cycles=24,              # 24 cycles
+    #     wells_to_test=["A1", "A2", "B1", "B2"],
+    #     contact_method="extrapolation",
+    #     measure_with_return=True,
+    #     start_delay=10.0,       # 10 second initial delay
+    #     stop_on_error=False     # Continue even if one cycle fails
+    # )
+    
+    # Home the machine if something goes wrong
     # from src.CNCController import CNCController
     # cnc = CNCController()
     # cnc.home(zero_after=True)
+    
     wells_to_test = ["B11", "C11"]
     main(do_measure=False, existing_run_folder='run_463_20250917_000017', wells_to_test=wells_to_test, contact_method="retrospective", measure_with_return=True)
 

@@ -12,6 +12,7 @@ import time
 import statistics
 from godirect import GoDirect
 from typing import Optional, Tuple
+from .version import __version__
 
 # === FORCE SENSOR CONFIGURATION ===
 THRESHOLD = -100  # Minimum force reading to consider valid
