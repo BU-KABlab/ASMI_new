@@ -8,8 +8,8 @@ Supports two workflows:
 
 Also supports splitting direction-tagged measurements into _down/_up CSVs and per-direction analysis/plots.
 
-Author: [Your Name/Institution]
-Date: 2024
+Author: Hongrui Zhang
+Date: 09/2025
 License: MIT
 """
 
@@ -30,7 +30,7 @@ from src.plot import plotter
 def ensure_run_folder(base: str = "results/measurements") -> str:
     """Create and return a new run folder path under base."""
     run_count = get_and_increment_run_count(os.path.join("src", "run_count.txt"))
-    run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_folder = os.path.join(base, f"run_{run_count:03d}_{run_date}")
     os.makedirs(run_folder, exist_ok=True)
     return run_folder
@@ -57,7 +57,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
         with open(orig_csv_path, 'r') as f:
             reader = _csv.reader(f)
             rows = [r for r in reader if r]
-    except Exception as e:
+        except Exception as e:
         print(f"⚠️ Failed to read for splitting: {orig_csv_path}: {e}")
         return None, None
 
@@ -125,8 +125,8 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
     if not analyzer.load_data(filename):
-        return None
-
+            return None
+        
     # Map friendly names → analyzer keys (best-effort if supported)
     method_key = {
         "extrapolation": "true_contact",
@@ -151,8 +151,8 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
 
     if not result:
         print("❌ Analysis failed")
-        return None
-
+            return None
+        
     # Derive run_folder from data path for plotting
     run_folder = None
     for part in data_dir.split(os.sep):
@@ -176,7 +176,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
         plot_results_via_plotter(result, run_folder, method=method_for_plot, direction_label=dir_label)
     except Exception:
         plot_results_via_plotter(result, run_folder)
-    return result
+            return result
 
 
 def run_measure_analyze_plot(
@@ -215,8 +215,8 @@ def run_measure_analyze_plot(
                 well=well,
                 filename=datafile,
                 run_folder=run_folder,
-                z_target=z_target,
-                step_size=step_size,
+                z_target=z_target, 
+                step_size=step_size, 
                 force_limit=force_limit,
                 well_top_z=well_top_z,  # Move to well top before indentation
             )
@@ -326,9 +326,9 @@ def main(
                     well=w.upper(),
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
-                    z_target=z_target,
+                        z_target=z_target,
                     step_size=step_size,
-                    force_limit=force_limit,
+                        force_limit=force_limit,
                     well_top_z=well_top_z,
                     run_folder=os.path.join("results", "measurements", run_folder_name) if run_folder_name else None,
                 )
@@ -425,7 +425,7 @@ def main(
             tmp_analyzer = IndentationAnalyzer()
             tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
             tmp_analyzer.plot_raw_force_individual_wells(run_folder_name, save_plot=True)
-        except Exception as e:
+            except Exception as e:
             print(f"⚠️ Failed to generate raw data plots: {e}")
 
 
@@ -513,7 +513,7 @@ def measure_at_intervals(
                                 well_core = r.well[: -len("_down")]
                             elif name_lower.endswith("_up"):
                                 well_core = r.well[: -len("_up")]
-                            else:
+                else:
                                 well_core = r.well
                             w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
                     return out_csv
@@ -524,7 +524,7 @@ def measure_at_intervals(
                 if up_results:
                     up_csv = _write_subset("up", up_results)
                     plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
-            else:
+        else:
                 summary_csv = write_summary_csv(run_folder_name, results)
                 plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
 

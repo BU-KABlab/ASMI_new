@@ -2,6 +2,10 @@
 
 This directory contains the core modules of the Automated Soft Matter Indenter (ASMI) system. Each module is designed to handle specific aspects of the measurement and analysis workflow.
 
+**Author**: Hongrui Zhang  
+**Date**: 09/2025  
+**License**: MIT
+
 ## Module Overview
 
 ### Core Modules

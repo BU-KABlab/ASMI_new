@@ -2,8 +2,8 @@
 ASMI Data Analysis v2 - Elastic Modulus Calculation from Indentation Data
 Hertzian contact mechanics with robust contact detection and plotting wrappers.
 
-Author: [Your Name/Institution]
-Date: 2024
+Author: Hongrui Zhang
+Date: 09/2025
 License: MIT
 """
 
@@ -50,7 +50,7 @@ class IndentationAnalyzer:
     FORCE_THRESHOLD = 2.0              # N
     FORCE_LIMIT = 25.0                 # N (filtering)
     
-    # Well geometry constants
+     # Well geometry constants
     WELL_DEPTH = 10.9  # mm
     WELL_TOP_Z = -9.0  # mm
     
@@ -480,7 +480,7 @@ class IndentationAnalyzer:
                         ss_res = np.sum((vf - pred) ** 2)
                         ss_tot = np.sum((vf - np.mean(vf)) ** 2)
                         r2_sub = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-                    else:
+        else:
                         r2_sub = 0
                     subset = AnalysisResult(
                         well=well,
@@ -550,7 +550,7 @@ class IndentationAnalyzer:
         try:
             plotter.plot_results(result, save_plot, run_folder, method)
         except TypeError:
-            plotter.plot_results(result, save_plot, run_folder)
+        plotter.plot_results(result, save_plot, run_folder)
 
     # ------------------------------ Utilities -------------------------------
     def split_up_down_post_contact(

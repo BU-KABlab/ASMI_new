@@ -221,7 +221,7 @@ If you use this software in your research, please cite:
 
 ```
 ASMI - Automated Soft Matter Indenter
-[Your Institution], [Year]
+Hongrui Zhang, 2025
 ```
 
 ## Support

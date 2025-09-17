@@ -3,8 +3,8 @@ Force Sensor Module for ASMI
 
 Interfaces with GoDirect force sensors for real-time force measurements.
 
-Author: [Your Name/Institution]
-Date: 2024
+Author: Hongrui Zhang
+Date: 09/2025
 License: MIT
 """
 
