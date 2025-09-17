@@ -3,6 +3,10 @@ results/measurements/**
 !results/measurements/.gitkeep
 results/plots/**
 !results/plots/.gitkeep
+results/calibration/**
+results/force_measurements/**
+results/*.png
+results/*.md
 
 # Archived files (local only)
 archived/
