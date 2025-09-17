@@ -1,6 +1,0 @@
-Test_Time,2025-07-15 19:54:27
-Force_Limit(N),45.0
-Target_Z(mm),-14.000
-
-Well,Force_Exceeded,Stop_Z(mm),Max_Force(N),Samples,Filename
-C6,False,N/A,3.212,85,results/well_measurements/run_014_20250715_195406/well_C6_20250715_195427.csv

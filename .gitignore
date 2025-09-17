@@ -1,0 +1,8 @@
+# Results (keep directory, ignore contents)
+results/measurements/**
+!results/measurements/.gitkeep
+results/plots/**
+!results/plots/.gitkeep
+
+# macOS
+.DS_Store
