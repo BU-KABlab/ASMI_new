@@ -189,7 +189,7 @@ def run_measure_analyze_plot(
     z_target: float = -17.0,
     step_size: float = 0.01,
     force_limit: float = 15.0,
-    well_top_z: float = -9.0,
+    well_top_z: float | None = -9.0,
     run_folder: str | None = None,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
@@ -211,6 +211,16 @@ def run_measure_analyze_plot(
     else:
         datafile = os.path.join(run_folder, f"indentation_{timestamp}.csv")
         print(f"📍 Measuring at current position (no well specified)")
+
+    # Handle well_top_z=None by using current Z position
+    if well_top_z is None:
+        current_pos = cnc.get_current_position()
+        if current_pos:
+            well_top_z = float(current_pos[2])
+            print(f"📍 Using current Z position as well_top_z: {well_top_z:.1f}mm")
+        else:
+            print("⚠️ Could not get current position, using default well_top_z=-9.0mm")
+            well_top_z = -9.0
 
     try:
         t0 = time.time()
@@ -311,7 +321,7 @@ def main(
     z_target: float = -15.0,
     step_size: float = 0.02,
     force_limit: float = 5.0,
-    well_top_z: float = -9.0,
+    well_top_z: float | None = -9.0,
     existing_measured_with_return: bool = True,
     show_version: bool = False,
     move_to_pickup: bool = False,
@@ -329,7 +339,7 @@ def main(
         z_target: Target indentation depth (mm)
         step_size: Movement step size (mm)
         force_limit: Force limit (N)
-        well_top_z: Well top position before indentation (mm)
+        well_top_z: Well top position before indentation (mm) or None to use current Z position
         existing_measured_with_return: Whether existing data has return measurements
         show_version: Display version information and exit
         move_to_pickup: Move to pickup position after measurements
@@ -496,7 +506,7 @@ def run_main_at_intervals(
     z_target: float = -15.0,
     step_size: float = 0.02,
     force_limit: float = 5.0,
-    well_top_z: float = -9.0,
+    well_top_z: float | None = -9.0,
     generate_heatmap: bool = True,
     start_delay: float = 0.0,
     stop_on_error: bool = False,
@@ -514,7 +524,7 @@ def run_main_at_intervals(
         z_target: Target indentation depth (mm)
         step_size: Movement step size (mm)
         force_limit: Force limit (N)
-        well_top_z: Well top position (mm)
+        well_top_z: Well top position (mm) or None to use current Z position
         generate_heatmap: Generate heatmaps after each cycle
         start_delay: Initial delay before first cycle (seconds)
         stop_on_error: Stop all cycles if one fails (vs continue)
@@ -650,7 +660,8 @@ if __name__ == "__main__":
     #     measure_with_return=True,
     #     z_target=-15.0,
     #     step_size=0.01,
-    #     force_limit=5.0
+    #     force_limit=5.0,
+    #     well_top_z=None  # Use current Z position as reference
     # )
     
     # Home the machine if something goes wrong
