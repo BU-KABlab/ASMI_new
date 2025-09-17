@@ -18,13 +18,13 @@ import csv
 import time
 from datetime import datetime
 
-from src.force_monitoring import (
+from src.ForceMonitoring import (
     simple_indentation_measurement,
     simple_indentation_with_return_measurement,
     get_and_increment_run_count,
 )
-from src.analysis import IndentationAnalyzer
-from src.plot import plotter
+from src.Analysis import IndentationAnalyzer
+from src.Plot import plotter
 from src.version import get_full_version
 
 
@@ -121,8 +121,8 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"):
-    """Analyze a single CSV file and emit plots. Compatible with current src.analysis."""
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"):
+    """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
     if not analyzer.load_data(filename):
@@ -183,7 +183,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "extrapolation"
 def run_measure_analyze_plot(
     cnc,
     force_sensor,
-    well: str,
+    well: str | None,
     contact_method: str,
     measure_with_return: bool = False,
     z_target: float = -17.0,
@@ -192,20 +192,25 @@ def run_measure_analyze_plot(
     well_top_z: float = -9.0,
     run_folder: str | None = None,
 ):
-    """Measure a single well, then analyze and plot (handles split up/down files automatically)."""
+    """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
     run_folder = run_folder or ensure_run_folder()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    datafile = os.path.join(run_folder, f"well_{well}_{timestamp}.csv")
-
-    # Move to the requested well (XY) at safety Z before measuring
-    col = ''.join([c for c in well if c.isalpha()]).upper()
-    row = ''.join([c for c in well if c.isdigit()])
-    if col and row:
-        try:
-            cnc.move_to_well(col, row, z=0.0)
-        except Exception as e:
-            print(f"⚠️ Could not move to well {well}: {e}")
+    
+    # Generate filename based on whether well is specified
+    if well is not None:
+        datafile = os.path.join(run_folder, f"well_{well}_{timestamp}.csv")
+        # Move to the requested well (XY) at safety Z before measuring
+        col = ''.join([c for c in well if c.isalpha()]).upper()
+        row = ''.join([c for c in well if c.isdigit()])
+        if col and row:
+            try:
+                cnc.move_to_well(col, row, z=0.0)
+            except Exception as e:
+                print(f"⚠️ Could not move to well {well}: {e}")
+    else:
+        datafile = os.path.join(run_folder, f"indentation_{timestamp}.csv")
+        print(f"📍 Measuring at current position (no well specified)")
 
     try:
         t0 = time.time()
@@ -251,12 +256,21 @@ def run_measure_analyze_plot(
         # Split into _down and _up CSVs and analyze each with well suffix
         down_csv, up_csv = split_up_down_csv(datafile)
         per_well_results = []
+        
+        # Generate well names for analysis
+        if well is not None:
+            well_down = f"{well}_down"
+            well_up = f"{well}_up"
+        else:
+            well_down = "indentation_down"
+            well_up = "indentation_up"
+            
         if down_csv:
-            r_down = analyze_file(datafile=down_csv, well=f"{well}_down", contact_method=contact_method)
+            r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method)
             if r_down:
                 per_well_results.append(r_down)
         if up_csv:
-            r_up = analyze_file(datafile=up_csv, well=f"{well}_up", contact_method=contact_method)
+            r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method)
             if r_up:
                 per_well_results.append(r_up)
 
@@ -307,7 +321,7 @@ def main(
     
     Args:
         do_measure: Whether to perform measurements (True) or analyze existing data (False)
-        wells_to_test: List of wells to measure (e.g., ["A1", "A2", "B1"])
+        wells_to_test: List of wells to measure (e.g., ["A1", "A2", "B1"]) or [None] for current position
         contact_method: Contact detection method ("extrapolation", "retrospective", "simple_threshold")
         existing_run_folder: Folder name for existing data analysis
         generate_heatmap: Generate heatmaps after measurements
@@ -350,10 +364,12 @@ def main(
             # cnc.move_to_z(well_top_z)
             # cnc.wait_for_idle()
             for w in wells_to_test:
+                # Handle None well (current position measurement)
+                well_param = w.upper() if w is not None else None
                 r, run_folder_name = run_measure_analyze_plot(
                     cnc=cnc,
                     force_sensor=force_sensor,
-                    well=w.upper(),
+                    well=well_param,
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
                         z_target=z_target,
@@ -623,7 +639,18 @@ if __name__ == "__main__":
     #     do_measure=True,
     #     wells_to_test=["A1", "A2"],
     #     move_to_pickup=True,
-    #     pickup_position=(0.0, 140.0, 10.0)  # Move to pickup after measurements
+    #     pickup_position=(0.0, 140.0, 0.0)  # Move to pickup after measurements
+    # )
+    
+    # Example measuring at current position (no well):
+    # main(
+    #     do_measure=True,
+    #     wells_to_test=[None],  # Measure at current position
+    #     contact_method="extrapolation",
+    #     measure_with_return=True,
+    #     z_target=-15.0,
+    #     step_size=0.01,
+    #     force_limit=5.0
     # )
     
     # Home the machine if something goes wrong
