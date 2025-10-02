@@ -15,7 +15,7 @@ from datetime import datetime
 from .version import __version__
 from .CNCController import CNCController
 from .ForceSensor import ForceSensor
-from .analysis import IndentationAnalyzer
+from .Analysis import IndentationAnalyzer
 
 
 def get_and_increment_run_count(run_count_file='src/run_count.txt'):
@@ -70,7 +70,7 @@ def simple_indentation_measurement(
             return False
 
         # Baseline
-        baseline_avg, baseline_std = force_sensor.get_baseline_force(samples=5)
+        baseline_avg, baseline_std = force_sensor.get_baseline_force(samples=10)
         print(f"📊 Baseline: {baseline_avg:.3f} ± {baseline_std:.3f} N")
 
         # Filename
@@ -103,6 +103,15 @@ def simple_indentation_measurement(
                 except Exception as e:
                     print(f"⚠️ Could not move to well {well}: {e}")
                     return False
+        else:
+            # For current position measurements, move to well_top_z
+            try:
+                print(f"📍 Moving to well top position Z={well_top_z:.1f}mm...")
+                cnc.move_to_z(well_top_z)
+                print(f"✅ Positioned at well top")
+            except Exception as e:
+                print(f"⚠️ Could not move to well top position: {e}")
+                return False
 
         measurements: list[list[float]] = []
         data_count = 0
@@ -193,7 +202,7 @@ def simple_indentation_with_return_measurement(
             print("❌ Force sensor not connected")
             return False
 
-        baseline_avg, baseline_std = force_sensor.get_baseline_force(samples=5)
+        baseline_avg, baseline_std = force_sensor.get_baseline_force(samples=10)
         print(f"📊 Baseline: {baseline_avg:.3f} ± {baseline_std:.3f} N")
 
         if filename is None:
@@ -225,6 +234,15 @@ def simple_indentation_with_return_measurement(
                 except Exception as e:
                     print(f"⚠️ Could not move to well {well}: {e}")
                     return False
+        else:
+            # For current position measurements, move to well_top_z
+            try:
+                print(f"📍 Moving to well top position Z={well_top_z:.1f}mm...")
+                cnc.move_to_z(well_top_z)
+                print(f"✅ Positioned at well top")
+            except Exception as e:
+                print(f"⚠️ Could not move to well top position: {e}")
+                return False
 
         measurements: list[list[object]] = []
 

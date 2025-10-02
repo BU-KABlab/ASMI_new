@@ -36,6 +36,10 @@ class AnalysisResult:
     material_type: str
     contact_z: float
     contact_force: float
+    spring_constant: Optional[float] = None
+    linear_fit_quality: Optional[float] = None
+    linear_intercept: Optional[float] = None
+    corrected_depths: Optional[list] = None  # For Hertzian fits with system compliance correction
 
 
 class IndentationAnalyzer:
@@ -50,6 +54,10 @@ class IndentationAnalyzer:
     INDENTATION_DEPTH_THRESHOLD = 2.5  # mm
     FORCE_THRESHOLD = 2.0              # N
     FORCE_LIMIT = 25.0                 # N (filtering)
+    RETROSPECTIVE_THRESHOLD = 13     # N (retrospective contact detection)
+    
+    # System compliance correction for Hertzian fitting
+    K_SYSTEM = 21.73  # N/mm - system stiffness for depth correction
     
      # Well geometry constants
     WELL_DEPTH = 10.9  # mm
@@ -179,18 +187,33 @@ class IndentationAnalyzer:
     ) -> int:
         return self.find_extraploation_contact_point(z_positions, raw_forces, baseline, baseline_std)
     
-    def find_retrospective_contact_point(self, corrected_forces: List[float], threshold: float, z_positions: List[float]) -> int:
+    def find_retrospective_contact_point(self, corrected_forces: List[float], threshold: float, z_positions: List[float], use_gradient: bool = False) -> int:
         if len(corrected_forces) < 3:
             return 0
         max_depth_idx = max(range(len(corrected_forces)), key=lambda i: abs(z_positions[i]))
-        for i in range(max_depth_idx, 0, -1):
-            cur = abs(corrected_forces[i])
-            prev = abs(corrected_forces[i - 1])
-            if i < len(corrected_forces) - 1:
-                g1 = cur - prev
-                g2 = abs(corrected_forces[i + 1]) - cur
-                if (g1 > 0 and g2 < 0) or (g1 < 0 and g2 > 0):
+
+        # Threshold-only mode: walk backward and return the first point under threshold
+        if not use_gradient:
+            for i in range(max_depth_idx, 0, -1):
+                cur = abs(corrected_forces[i])
+                if cur <= threshold:
                     return i
+            return 0
+
+        # Gradient mode: detect a turning point that sustains for the next two steps (g1 vs g2, with g2 == sign g3)
+        # Ensure we don't index out of range when looking ahead
+        for i in range(min(max_depth_idx, len(corrected_forces) - 4), 0, -1):
+            cur = abs(corrected_forces[i])
+            # Forward differences from i
+            f1 = abs(corrected_forces[i + 1])
+            f2 = abs(corrected_forces[i + 2])
+            f3 = abs(corrected_forces[i + 3])
+            g1 = f1 - cur
+            g2 = f2 - f1
+            g3 = f3 - f2
+            if np.sign(g1) != np.sign(g2) and np.sign(g2) == np.sign(g3):
+                return i
+            # Fallback to threshold at this position
             if cur <= threshold:
                 return i
         return 0
@@ -208,6 +231,18 @@ class IndentationAnalyzer:
         # Sample Height ≈ 10.9 + 8.5 - |z_contact| = 19.4 - |z_contact|
         h = 19.4 - abs(z_contact)
         return max(0.1, min(h, 50.0))
+    
+    def correct_depth_for_system_compliance(self, depths: np.ndarray, forces: np.ndarray) -> np.ndarray:
+        """Correct measured depths for system compliance: d_true = d_measure - force / k_system
+        
+        Args:
+            depths: Measured indentation depths (mm)
+            forces: Corresponding forces (N)
+            
+        Returns:
+            Corrected depths (mm)
+        """
+        return depths - forces / self.K_SYSTEM
 
     # ---------------------- Material property detection ---------------------
     def detect_force_limit_reached(self, filename: str) -> Tuple[bool, float]:
@@ -251,7 +286,7 @@ class IndentationAnalyzer:
 
         R = self.SPHERE_RADIUS
         A_SI = A * (1000 ** 1.5)
-        E_star = (3.0 / 4.0) * A_SI / (R ** 0.5)
+        E_star = (3.0 / 4.0) * A_SI / (R ** 0.5) # E* is the reduced elastic modulus
         # Include indenter contribution (full relationship)
         E_sample = E_star * (1 - p_ratio ** 2)
         E_inv = (1 - p_ratio ** 2) / E_sample - (1 - self.SPHERE_NU ** 2) / self.SPHERE_E
@@ -288,6 +323,51 @@ class IndentationAnalyzer:
                 raise
             return FitResult(None, None, hertz)
 
+    def fit_linear_model(self, depths: np.ndarray, forces: np.ndarray, raise_on_fail=False) -> FitResult:
+        """Fit a linear model F = k * d + b to the data for spring constant calculation.
+        
+        Args:
+            depths: Array of indentation depths (mm)
+            forces: Array of forces (N)
+            raise_on_fail: Whether to raise exception on fitting failure
+            
+        Returns:
+            FitResult with spring constant k, intercept b, and R² quality
+        """
+        def linear(depth, k, b):
+            return k * depth + b
+
+        if len(depths) < 2 or len(forces) < 2:
+            if raise_on_fail:
+                raise ValueError("Not enough data points for linear fitting (need at least 2).")
+            return FitResult(None, None, linear)
+        
+        if np.any(np.isnan(depths)) or np.any(np.isnan(forces)):
+            if raise_on_fail:
+                raise ValueError("Input data contains NaNs.")
+            return FitResult(None, None, linear)
+        
+        try:
+            # Linear fit: F = k * d + b
+            p, cov = curve_fit(linear, depths, forces, p0=[1.0, 0.0])
+            k = float(p[0])
+            b = float(p[1])
+            
+            # Calculate R²
+            predicted = linear(depths, k, b)
+            ss_res = np.sum((forces - predicted) ** 2)
+            ss_tot = np.sum((forces - np.mean(forces)) ** 2)
+            r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+            
+            print(f"📏 Linear fit: F = {k:.3f}*d + {b:.3f} N, R² = {r2:.3f}")
+            return FitResult(p, cov, linear)
+            
+        except Exception as e:
+            print(f"❌ Linear fitting failed: {e}")
+            if raise_on_fail:
+                raise
+            return FitResult(None, None, linear)
+
     # ----------------------------- Main analysis ----------------------------
     def analyze_well(
         self,
@@ -295,6 +375,7 @@ class IndentationAnalyzer:
         poisson_ratio: Optional[float] = None,
         filename: Optional[str] = None,
         contact_method: str = "true_contact",
+        fit_method: str = "hertzian",  # "hertzian" or "linear"
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
@@ -339,7 +420,7 @@ class IndentationAnalyzer:
             first_idx = self.find_extraploation_contact_point(z_positions, raw_forces, baseline, baseline_std)
             label_method = "extrapolation"
         elif contact_method == "retrospective":
-            first_idx = self.find_retrospective_contact_point(corrected_forces, 0.05, z_positions)
+            first_idx = self.find_retrospective_contact_point(corrected_forces, threshold = self.RETROSPECTIVE_THRESHOLD, z_positions = z_positions)
             label_method = "retrospective"
         elif contact_method == "simple_threshold":
             first_idx = self.find_contact_point(raw_forces, baseline, baseline_std)
@@ -396,36 +477,77 @@ class IndentationAnalyzer:
 
         approx_h = self.calculate_approx_height(zc)
 
-        # Fit with bounds: A >= 0, d0 within window
+        # Choose fitting method: Hertzian or Linear
         d_arr = np.array(d_in)
         f_arr = np.abs(np.array(f_in))
-        lb = [0.0, -0.1]
-        ub = [np.inf, 2.0]
-        fit = self.fit_hertz_model(d_arr, f_arr, bounds=(lb, ub))
-        if fit.params is None:
-            print("❌ Curve fitting failed")
-            return None
-        fit_A = float(fit.params[0])
-        fit_d0 = float(fit.params[1])
-
-        E = round(self.adjust_E(self.find_E(fit_A, poisson_ratio)))
-        if fit.covariance is not None:
-            err = np.sqrt(np.diag(fit.covariance))
-            E_unc = round(self.find_E(err[0], poisson_ratio))
-        else:
-            E_unc = 0
-
-        # R^2 on valid region
-        mask = d_arr > fit_d0
-        if np.sum(mask) > 5:
-            vd = d_arr[mask]
-            vf = f_arr[mask]
-            pred = fit_A * (vd - fit_d0) ** 1.5
-            ss_res = np.sum((vf - pred) ** 2)
-            ss_tot = np.sum((vf - np.mean(vf)) ** 2)
+        
+        if fit_method.lower() == "linear":
+            # Linear fitting: F = k * d
+            print("📏 Using linear fitting (F = k * d)")
+            linear_fit = self.fit_linear_model(d_arr, f_arr)
+            if linear_fit.params is None:
+                print("❌ Linear fitting failed")
+                return None
+        
+            k = float(linear_fit.params[0])
+            b = float(linear_fit.params[1])
+            spring_constant = k
+            linear_intercept = b
+            
+            # Calculate R² for linear fit
+            predicted = k * d_arr + b
+            ss_res = np.sum((f_arr - predicted) ** 2)
+            ss_tot = np.sum((f_arr - np.mean(f_arr)) ** 2)
             r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+            linear_r2 = r2
+            
+            # For linear fit, set Hertzian parameters to None/0
+            E = 0  # No elastic modulus for linear fit
+            E_unc = 0
+            fit_A = 0
+            fit_d0 = 0
+            corrected_depths = None  # No depth correction for linear fit
+            
         else:
-            r2 = 0
+            # Hertzian fitting (default)
+            print("🔬 Using Hertzian fitting with system compliance correction")
+            # Apply system compliance correction: d_true = d_measure - force / k_system
+            d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr)
+            print(f"🔧 Applied system compliance correction (k_system = {self.K_SYSTEM} N/mm)")
+            lb = [0.0, -0.1]
+            ub = [np.inf, 2.0]
+            fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
+            if fit.params is None:
+                print("❌ Hertzian fitting failed")
+                return None
+            
+            fit_A = float(fit.params[0])
+            fit_d0 = float(fit.params[1])
+
+            E = round(self.adjust_E(self.find_E(fit_A, poisson_ratio)))
+            if fit.covariance is not None:
+                err = np.sqrt(np.diag(fit.covariance))
+                E_unc = round(self.find_E(err[0], poisson_ratio))
+            else:
+                E_unc = 0
+
+            # R^2 on valid region for Hertzian (use corrected depths)
+            mask = d_corrected > fit_d0
+            if np.sum(mask) > 5:
+                vd = d_corrected[mask]
+                vf = f_arr[mask]
+                pred = fit_A * (vd - fit_d0) ** 1.5
+                ss_res = np.sum((vf - pred) ** 2)
+                ss_tot = np.sum((vf - np.mean(vf)) ** 2)
+                r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+            else:
+                r2 = 0
+            
+            # No linear parameters for Hertzian fit
+            spring_constant = None
+            linear_r2 = None
+            linear_intercept = None
+            corrected_depths = list(d_corrected)  # Store corrected depths for plotting
 
         result = AnalysisResult(
             well=well,
@@ -442,6 +564,10 @@ class IndentationAnalyzer:
             material_type=material_type,
             contact_z=float(round(zc, 3)),
             contact_force=float(round(corrected_forces[first_idx], 3)),
+            spring_constant=spring_constant,
+            linear_fit_quality=linear_r2,
+            linear_intercept=linear_intercept,
+            corrected_depths=corrected_depths if fit_method.lower() != "linear" else None,
         )
 
         # Optional per-direction subset plots when direction info exists
@@ -483,6 +609,7 @@ class IndentationAnalyzer:
                         r2_sub = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
                     else:
                         r2_sub = 0
+                    
                     subset = AnalysisResult(
                         well=well,
                         elastic_modulus=round(self.adjust_E(self.find_E(A_sub, poisson_ratio))),
@@ -499,7 +626,13 @@ class IndentationAnalyzer:
                         contact_z=float(round(zc, 3)),
                         contact_force=float(round(corrected_forces[first_idx], 3)),
                     )
-                    self.plot_results(subset, save_plot=True, run_folder=self._extract_run_folder(filename), method=label_method, direction_label=dir_label)
+                    self.plot_results(
+                        subset,
+                        save_plot=True,
+                        run_folder=self._extract_run_folder(filename),
+                        method=label_method,
+                        direction_label=dir_label,
+                    )
 
                 plot_subset(z_down, f_down, "down")
                 plot_subset(z_up, f_up, "up")
@@ -510,11 +643,11 @@ class IndentationAnalyzer:
 
     # ------------------------------ Plotting API ----------------------------
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
-        from .plot import plotter
+        from .Plot import plotter
         plotter.plot_raw_data_all_wells(run_folder, save_plot)
 
     def plot_raw_force_individual_wells(self, run_folder: str, save_plot: bool = True):
-        from .plot import plotter
+        from .Plot import plotter
         plotter.plot_raw_force_individual_wells(run_folder, save_plot)
 
     def plot_contact_detection(
@@ -531,7 +664,7 @@ class IndentationAnalyzer:
         directions: Optional[List[str]] = None,
         direction_label: Optional[str] = None,
     ):
-        from .plot import plotter
+        from .Plot import plotter
         plotter.plot_contact_detection(
             z_positions,
             raw_forces,
@@ -547,7 +680,7 @@ class IndentationAnalyzer:
         )
 
     def plot_results(self, result: AnalysisResult, save_plot: bool = True, run_folder: Optional[str] = None, method: Optional[str] = None):
-        from .plot import plotter
+        from .Plot import plotter
         try:
             plotter.plot_results(result, save_plot, run_folder, method)
         except TypeError:
@@ -624,7 +757,7 @@ class IndentationAnalyzer:
         return None
 
 
-def main(contact_method: str = "extrapolation"):
+def main(contact_method: str = "retrospective"):
     import sys
     print("🔬 ASMI Indentation Analysis (v2)")
     if len(sys.argv) < 3:

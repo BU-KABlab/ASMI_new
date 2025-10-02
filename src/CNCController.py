@@ -22,8 +22,8 @@ BAUD_RATE = 115200
 GRBL_PORT = '/dev/cu.usbserial-130'
 
 # === WELL PLATE GEOMETRY ===
-A1_X = 99.0
-A1_Y = 48.5
+A1_X = 97.5 # original: 99.0
+A1_Y = 59.5 # original: 48.5
 Z_INITIAL = 0 # safety height
 WELL_SPACING = 9.0
 ROWS = [str(i) for i in range(1, 13)]
@@ -587,3 +587,10 @@ class CNCController:
         gcode = f"G01 X{pickup_position[0]:.3f} Y{pickup_position[1]:.3f} Z{pickup_position[2]:.3f} F{feedrate}"
         self.send_gcode(gcode)
         self.save_position()
+        
+    def move_to_x_y(self, x: float, y: float, z: float = Z_INITIAL, feedrate: float = FEEDRATE):
+        """Move to a designated absolute X,Y position."""
+        gcode = f"G01 X{x:.3f} Y{y:.3f} Z{z:.3f} F{feedrate}"
+        self.send_gcode(gcode)
+        self.save_position()
+        

@@ -368,10 +368,27 @@ class ASMIPlotter:
         depths_ok = bool(getattr(result, 'depth_in_range', None)) and len(result.depth_in_range) > 0
         forces_avail = hasattr(result, 'adjusted_forces') and bool(getattr(result, 'adjusted_forces', None))
 
+        # Determine if this is a linear-fit result (spring constant) or Hertzian
+        is_linear = bool(getattr(result, 'spring_constant', None)) and getattr(result, 'spring_constant') not in (None, 0)
+        
+        # Check if system compliance correction was used (for Hertzian fits only)
+        use_system_correction = getattr(result, 'corrected_depths', None) is not None and not is_linear
+        
+        # Initialize variables to avoid UnboundLocalError
+        shifted_depths_original = None
+        shifted_depths_corrected = None
+
         if not depths_ok:
             # Summary plot only
             plt.figure(figsize=(10, 6))
-            plt.text(0.5, 0.5, f'Well {result.well}\nE = {result.elastic_modulus} Pa\nA = {result.fit_A:.3f}\nd0 = {result.fit_d0:.3f}mm\nR² = {result.fit_quality}',
+            if is_linear:
+                k_val = float(getattr(result, 'spring_constant', 0))
+                b_val = float(getattr(result, 'linear_intercept', 0))
+                r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
+                summary_text = f'Well {result.well}\nF = {k_val:.3f}*d + {b_val:.3f} N\nR² = {r2_val:.3f}'
+            else:
+                summary_text = f'Well {result.well}\nE = {result.elastic_modulus} Pa\nA = {result.fit_A:.3f}\nd0 = {result.fit_d0:.3f} mm\nR² = {result.fit_quality}'
+            plt.text(0.5, 0.5, summary_text,
                     ha='center', va='center', transform=plt.gca().transAxes, fontsize=14,
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
             plt.xlim(0, 1)
@@ -381,29 +398,96 @@ class ASMIPlotter:
         else:
             plt.figure(figsize=(10, 6))
             depths_array = np.array(result.depth_in_range)
-            # Shift all points by d0 so contact is at (0,0); clamp negatives to 0 for visualization
-            shifted_depths_all = np.maximum(depths_array - result.fit_d0, 0)
-            # Fit curve domain: from 0 to max shifted depth
-            max_depth = float(np.max(shifted_depths_all)) if shifted_depths_all.size > 0 else 2.0
-            fit_depths = np.linspace(0, max_depth, 100)
-            fit_forces = result.fit_A * (fit_depths) ** 1.5
+            if is_linear:
+                # Linear fit uses direct depths (already from contact), no shift needed
+                shifted_depths_all = np.maximum(depths_array, 0)
+                max_depth = float(np.max(shifted_depths_all)) if shifted_depths_all.size > 0 else 2.0
+                fit_depths = np.linspace(0, max_depth, 100)
+                k_val = float(getattr(result, 'spring_constant', 0))
+                # Get intercept from fit parameters if available
+                b_val = float(getattr(result, 'linear_intercept', 0))
+                fit_forces = k_val * fit_depths + b_val
+            else:
+                # Hertzian: Handle system compliance correction
+                corrected_depths = getattr(result, 'corrected_depths', None)
+                
+                # Always use original depths as base
+                depths_array = np.array(result.depth_in_range)
+                
+                if use_system_correction:
+                    print("📊 Using system compliance corrected depths for plotting")
+                    # Use corrected depths for fitting
+                    depths_array_corrected = np.array(corrected_depths)
+                else:
+                    # No correction, use original depths for both
+                    depths_array_corrected = depths_array
+                
+                # Shift corrected depths by d0 for fitting
+                shifted_depths_corrected = np.maximum(depths_array_corrected - result.fit_d0, 0)
+                # Shift original depths by d0 for comparison
+                shifted_depths_original = np.maximum(depths_array - result.fit_d0, 0)
+                
+                # Fit curve domain: from 0 to max shifted depth (use corrected for fitting)
+                max_depth = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
+                fit_depths = np.linspace(0, max_depth, 100)
+                fit_forces = result.fit_A * (fit_depths) ** 1.5
 
             if forces_avail:
                 forces_array = np.array(result.adjusted_forces)
-                if shifted_depths_all.size > 0 and forces_array.size == shifted_depths_all.size:
-                    plt.scatter(shifted_depths_all, forces_array, alpha=0.6, label='Corrected Data (shifted)')
+                if is_linear:
+                    # For linear fits, plot the actual data points
+                    if shifted_depths_all.size > 0 and forces_array.size == shifted_depths_all.size:
+                        plt.scatter(shifted_depths_all, forces_array, alpha=0.6, s=30, 
+                                  color='blue', label='Measured Data')
+                elif use_system_correction and shifted_depths_original is not None and shifted_depths_corrected is not None:
+                    # Plot both original and corrected data when system correction is used
+                    if shifted_depths_original.size > 0 and forces_array.size == shifted_depths_original.size:
+                        plt.scatter(shifted_depths_original, forces_array, alpha=0.6, s=30, 
+                                  color='blue', label='Original Data (shifted)')
+                    if shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
+                        plt.scatter(shifted_depths_corrected, forces_array, alpha=0.6, s=40, 
+                                  color='purple', label='System Corrected Data (shifted)')
+                else:
+                    # Only plot corrected data when no system correction
+                    if shifted_depths_corrected is not None and shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
+                        plt.scatter(shifted_depths_corrected, forces_array, alpha=0.6, label='Corrected Data (shifted)')
             else:
                 # No forces; visualize depth support at y=0 only
-                if shifted_depths_all.size > 0:
-                    plt.scatter(shifted_depths_all, np.zeros_like(shifted_depths_all), s=10, alpha=0.6, label='Depth points (shifted)')
+                if is_linear:
+                    # For linear fits, plot depth points at y=0
+                    if shifted_depths_all.size > 0:
+                        plt.scatter(shifted_depths_all, np.zeros_like(shifted_depths_all), s=10, alpha=0.6, 
+                                  color='blue', label='Depth points')
+                elif use_system_correction and shifted_depths_original is not None and shifted_depths_corrected is not None:
+                    # Plot both original and corrected depth points
+                    if shifted_depths_original.size > 0:
+                        plt.scatter(shifted_depths_original, np.zeros_like(shifted_depths_original), s=8, alpha=0.6, 
+                                  color='blue', label='Original Depth points (shifted)')
+                    if shifted_depths_corrected.size > 0:
+                        plt.scatter(shifted_depths_corrected, np.zeros_like(shifted_depths_corrected), s=12, alpha=0.6, 
+                                  color='purple', label='System Corrected Depth points (shifted)')
+                else:
+                    if shifted_depths_corrected is not None and shifted_depths_corrected.size > 0:
+                        plt.scatter(shifted_depths_corrected, np.zeros_like(shifted_depths_corrected), s=10, alpha=0.6, label='Depth points (shifted)')
 
-            # Draw the fitted curve and explicitly mark the model contact at (0,0)
-            plt.plot(fit_depths, fit_forces, 'r-', label=f'Hertzian Fit (A={result.fit_A:.3f}, d0={result.fit_d0:.3f} mm)')
-            plt.scatter([0], [0], c='k', marker='x', s=40, label='Model contact (0,0)')
-            plt.xlabel('Indentation Depth (mm)')
-            plt.ylabel('Force (N)')
-            dir_title = f" ({direction_label})" if direction_label else ""
-            plt.title(f'Well {result.well}{dir_title}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality}')
+            # Draw the fitted curve and labels
+            if is_linear:
+                plt.plot(fit_depths, fit_forces, 'r-', label=f'Linear Fit (k={k_val:.3f}, b={b_val:.3f})')
+                plt.xlabel('Indentation Depth (mm)')
+                plt.ylabel('Force (N)')
+                dir_title = f" ({direction_label})" if direction_label else ""
+                r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
+                plt.title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}')
+            else:
+                plt.plot(fit_depths, fit_forces, 'r-', label=f'Hertzian Fit (A={result.fit_A:.3f}, d0={result.fit_d0:.3f} mm)')
+                # Explicitly mark the model contact at (0,0)
+                plt.scatter([0], [0], c='k', marker='x', s=40, label='Model contact (0,0)')
+                plt.xlabel('Indentation Depth (mm)')
+                plt.ylabel('Force (N)')
+                dir_title = f" ({direction_label})" if direction_label else ""
+                # Add system compliance correction note to title
+                compliance_note = " (system corrected)" if getattr(result, 'corrected_depths', None) is not None else ""
+                plt.title(f'Well {result.well}{dir_title}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality}{compliance_note}')
             plt.legend()
             plt.grid(True, alpha=0.3)
 
@@ -427,13 +511,21 @@ class ASMIPlotter:
             with open(summary_filename, 'w') as f:
                 f.write(f"ASMI Analysis Results for Well {result.well}\n")
                 f.write("=" * 50 + "\n")
-                f.write(f"Elastic Modulus: {result.elastic_modulus} Pa\n")
-                f.write(f"Uncertainty: ±{result.uncertainty} Pa\n")
+                if is_linear:
+                    f.write(f"Spring Constant k: {getattr(result, 'spring_constant', 0):.3f} N/mm\n")
+                    f.write(f"Linear Intercept b: {getattr(result, 'linear_intercept', 0):.3f} N\n")
+                    f.write(f"Linear Fit R²: {float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0))):.3f}\n")
+                else:
+                    f.write(f"Elastic Modulus: {result.elastic_modulus} Pa\n")
+                    f.write(f"Uncertainty: ±{result.uncertainty} Pa\n")
                 f.write(f"Poisson's Ratio: {result.poisson_ratio}\n")
                 f.write(f"Sample Height: {result.sample_height} mm\n")
-                f.write(f"Fit Quality (R²): {result.fit_quality}\n")
-                f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
-                f.write(f"Fit Parameters: A={result.fit_A:.3f}, d0={result.fit_d0:.3f}\n")
+                if is_linear:
+                    f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
+                else:
+                    f.write(f"Fit Quality (R²): {result.fit_quality}\n")
+                    f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
+                    f.write(f"Fit Parameters: A={result.fit_A:.3f}, d0={result.fit_d0:.3f}\n")
                 f.write(f"Contact Point: Z={result.contact_z:.3f} mm, Force={result.contact_force:.3f} N\n")
                 f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             print(f"💾 Summary saved to: {summary_filename}")
@@ -506,13 +598,30 @@ class ASMIPlotter:
         ax.set_yticklabels(ROWS[::-1])
         ax.tick_params(axis='both', which='major', labelsize=24)
 
-        title = "96-Well Plate Young's Modulus Heatmap (MPa)" if (convert_to_mpa and value_col == 'ElasticModulus') else f"96-Well Plate {value_col} Heatmap"
+        # Determine appropriate title and units based on value column
+        if value_col == 'ElasticModulus':
+            if convert_to_mpa:
+                title = "96-Well Plate Young's Modulus Heatmap (MPa)"
+                unit_label = "MPa"
+            else:
+                title = "96-Well Plate Young's Modulus Heatmap (Pa)"
+                unit_label = "Pa"
+        elif value_col == 'SpringConstant_k':
+            title = "96-Well Plate Spring Constant Heatmap (N/mm)"
+            unit_label = "N/mm"
+        elif value_col == 'Intercept_b':
+            title = "96-Well Plate Intercept Heatmap (N)"
+            unit_label = "N"
+        else:
+            title = f"96-Well Plate {value_col} Heatmap"
+            unit_label = "units"
+        
         ax.set_title(title, fontsize=20)
 
         sm = plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, pad=0.02)
-        cbar.set_label(f"{value_col} (MPa)" if (convert_to_mpa and value_col == 'ElasticModulus') else f"{value_col} (Pa)", fontsize=18)
+        cbar.set_label(f"{value_col} ({unit_label})", fontsize=18)
         cbar.ax.tick_params(labelsize=16)
 
         plt.tight_layout()

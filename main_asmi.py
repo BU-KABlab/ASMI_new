@@ -18,6 +18,8 @@ import csv
 import time
 from datetime import datetime
 
+from numpy import False_
+
 from src.ForceMonitoring import (
     simple_indentation_measurement,
     simple_indentation_with_return_measurement,
@@ -26,6 +28,8 @@ from src.ForceMonitoring import (
 from src.Analysis import IndentationAnalyzer
 from src.Plot import plotter
 from src.version import get_full_version
+from src.CNCController import CNCController
+from src.ForceSensor import ForceSensor
 
 
 def ensure_run_folder(base: str = "results/measurements") -> str:
@@ -121,7 +125,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"):
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian"):
     """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
@@ -141,6 +145,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             poisson_ratio=None,  # auto-detect from file
             filename=datafile,
             contact_method=method_key,
+            fit_method=fit_method,
         )
     except TypeError:
         # Fall back if analyze_well does not accept contact_method
@@ -148,6 +153,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             well=well,
             poisson_ratio=None,
             filename=datafile,
+            fit_method=fit_method,
         )
 
     if not result:
@@ -191,6 +197,7 @@ def run_measure_analyze_plot(
     force_limit: float = 15.0,
     well_top_z: float | None = -9.0,
     run_folder: str | None = None,
+    fit_method: str = "hertzian",
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
@@ -276,11 +283,11 @@ def run_measure_analyze_plot(
             well_up = "indentation_up"
             
         if down_csv:
-            r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method)
+            r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method)
             if r_down:
                 per_well_results.append(r_down)
         if up_csv:
-            r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method)
+            r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method)
             if r_up:
                 per_well_results.append(r_up)
 
@@ -296,14 +303,51 @@ def write_summary_csv(run_folder_name: str, results: list):
     out_dir = os.path.join(plots_root, run_folder_name)
     os.makedirs(out_dir, exist_ok=True)
     out_csv = os.path.join(out_dir, "summary.csv")
+    
+    # Check if we have linear fit results (spring constant) or Hertzian (elastic modulus)
+    has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
+    
     with open(out_csv, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-        for r in results:
-            if r:
-                w.writerow([r.well, r.elastic_modulus, r.uncertainty, r.fit_quality])
+        if has_linear:
+            w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
+            for r in results:
+                if r:
+                    k_val = getattr(r, 'spring_constant', 0)
+                    b_val = getattr(r, 'linear_intercept', 0)
+                    r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
+                    w.writerow([r.well, k_val, b_val, r2_val])
+        else:
+            w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+            for r in results:
+                if r:
+                    w.writerow([r.well, r.elastic_modulus, r.uncertainty, r.fit_quality])
     print(f"💾 Summary CSV written: {out_csv}")
     return out_csv
+
+
+def print_linear_statistics(results: list, direction: str = ""):
+    """Print statistics for linear fit parameters (k and b)."""
+    linear_results = [r for r in results if r and getattr(r, 'spring_constant', None) is not None]
+    if not linear_results:
+        return
+    
+    k_values = [getattr(r, 'spring_constant', 0) for r in linear_results]
+    b_values = [getattr(r, 'linear_intercept', 0) for r in linear_results]
+    r2_values = [getattr(r, 'linear_fit_quality', 0) for r in linear_results]
+    
+    if k_values:
+        k_mean = sum(k_values) / len(k_values)
+        k_std = (sum((k - k_mean) ** 2 for k in k_values) / len(k_values)) ** 0.5
+        b_mean = sum(b_values) / len(b_values)
+        b_std = (sum((b - b_mean) ** 2 for b in b_values) / len(b_values)) ** 0.5
+        r2_mean = sum(r2_values) / len(r2_values)
+        r2_std = (sum((r2 - r2_mean) ** 2 for r2 in r2_values) / len(r2_values)) ** 0.5
+        
+        print(f"\n📊 Linear Fit Statistics {direction}:")
+        print(f"   Spring Constant k: {k_mean:.3f} ± {k_std:.3f} N/mm (n={len(k_values)})")
+        print(f"   Intercept b: {b_mean:.3f} ± {b_std:.3f} N (n={len(b_values)})")
+        print(f"   R² Quality: {r2_mean:.3f} ± {r2_std:.3f} (n={len(r2_values)})")
 
 
 def print_version():
@@ -312,9 +356,12 @@ def print_version():
 
 
 def main(
+    home_before_measure: bool = True,
+    cnc: CNCController | None = None,
+    force_sensor: ForceSensor | None = None,
     do_measure: bool = True,
     wells_to_test: list[str] | None = None,
-    contact_method: str = "extrapolation",
+    contact_method: str = "retrospective",
     existing_run_folder: str | None = None,
     generate_heatmap: bool = True,
     measure_with_return: bool = False,
@@ -326,6 +373,7 @@ def main(
     show_version: bool = False,
     move_to_pickup: bool = False,
     pickup_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    fit_method: str = "hertzian",  # "hertzian" or "linear"
 ):
     """Parameter-based entry point.
     
@@ -344,6 +392,7 @@ def main(
         show_version: Display version information and exit
         move_to_pickup: Move to pickup position after measurements
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
+        fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
     """
     
     if show_version:
@@ -354,26 +403,28 @@ def main(
     run_folder_name = None
 
     if do_measure:
-        # Setup shared hardware (home once before the batch)
-        from src.CNCController import CNCController
-        from src.ForceSensor import ForceSensor
-        cnc = CNCController()
-        # home the cnc first
+        # Ensure controllers exist
+        if cnc is None:
+            cnc = CNCController()
+        # Home the CNC first
         try:
-            if not cnc.home(zero_after=True):
+            if home_before_measure and not cnc.home(zero_after=True):
                 print("⚠️ Homing failed or timed out, attempting position sync...")
                 cnc.sync_position()
         except Exception as e:
             print(f"⚠️ Homing error: {e}. Proceeding with caution.")
-        force_sensor = ForceSensor()
+        if force_sensor is None:
+            force_sensor = ForceSensor()
 
-        if not wells_to_test:
-            wells_to_test = ["A1"]
+        # Build iteration list: measure at current position if no wells provided
+        wells_iter = wells_to_test if wells_to_test is not None else [None]
+
+        # Measure the wells
         try:
             # move to the well top position
             # cnc.move_to_z(well_top_z)
             # cnc.wait_for_idle()
-            for w in wells_to_test:
+            for w in wells_iter:
                 # Handle None well (current position measurement)
                 well_param = w.upper() if w is not None else None
                 r, run_folder_name = run_measure_analyze_plot(
@@ -382,11 +433,12 @@ def main(
                     well=well_param,
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
-                        z_target=z_target,
+                    z_target=z_target,
                     step_size=step_size,
-                        force_limit=force_limit,
+                    force_limit=force_limit,
                     well_top_z=well_top_z,
                     run_folder=os.path.join("results", "measurements", run_folder_name) if run_folder_name else None,
+                    fit_method=fit_method,
                 )
                 if r:
                     if isinstance(r, list):
@@ -442,15 +494,15 @@ def main(
                     continue
                 datafile = os.path.join(run_path, fname)
                 if well_name.lower().endswith("_down"):
-                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_down", contact_method=contact_method)
+                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_down", contact_method=contact_method, fit_method=fit_method)
                 elif well_name.lower().endswith("_up"):
-                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_up", contact_method=contact_method)
+                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_up", contact_method=contact_method, fit_method=fit_method)
                 else:
-                    r = analyze_file(datafile=datafile, well=well_core.upper(), contact_method=contact_method)
+                    r = analyze_file(datafile=datafile, well=well_core.upper(), contact_method=contact_method, fit_method=fit_method)
                 if r:
                     results.append(r)
 
-    if generate_heatmap and results and run_folder_name:
+    if wells_to_test is not None and generate_heatmap and results and run_folder_name:
         plots_root = os.path.join("results", "plots", run_folder_name)
         os.makedirs(plots_root, exist_ok=True)
 
@@ -464,28 +516,74 @@ def main(
                 out_csv = os.path.join(plots_root, f"summary_{name}.csv")
                 with open(out_csv, "w", newline="") as f:
                     w = csv.writer(f)
-                    w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-                    for r in subset:
-                        name_lower = r.well.lower()
-                        if name_lower.endswith("_down"):
-                            well_core = r.well[: -len("_down")]
-                        elif name_lower.endswith("_up"):
-                            well_core = r.well[: -len("_up")]
-                        else:
-                            well_core = r.well
-                        w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
+                    # Check if we have linear fit results (spring constant) or Hertzian (elastic modulus)
+                    has_linear = any(getattr(r, 'spring_constant', None) is not None for r in subset if r)
+                    if has_linear:
+                        w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
+                        for r in subset:
+                            if r:
+                                name_lower = r.well.lower()
+                                if name_lower.endswith("_down"):
+                                    well_core = r.well[: -len("_down")]
+                                elif name_lower.endswith("_up"):
+                                    well_core = r.well[: -len("_up")]
+                                else:
+                                    well_core = r.well
+                                k_val = getattr(r, 'spring_constant', 0)
+                                b_val = getattr(r, 'linear_intercept', 0)
+                                r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
+                                w.writerow([well_core.upper(), k_val, b_val, r2_val])
+                    else:
+                        w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+                        for r in subset:
+                            if r:
+                                name_lower = r.well.lower()
+                                if name_lower.endswith("_down"):
+                                    well_core = r.well[: -len("_down")]
+                                elif name_lower.endswith("_up"):
+                                    well_core = r.well[: -len("_up")]
+                                else:
+                                    well_core = r.well
+                                w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
                 return out_csv
 
             if down_results:
                 down_csv = write_subset("down", down_results)
-                plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
+                # Check if we have linear fit data
+                has_linear = any(getattr(r, 'spring_constant', None) is not None for r in down_results if r)
+                if has_linear:
+                    # Create heatmaps for spring constant and intercept
+                    plotter.plot_well_heatmap(down_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_down_spring_constant.png"), convert_to_mpa=False)
+                    plotter.plot_well_heatmap(down_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_down_intercept.png"), convert_to_mpa=False)
+                    # Print statistics
+                    print_linear_statistics(down_results, "(Down)")
+                else:
+                    plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
             if up_results:
                 up_csv = write_subset("up", up_results)
-                plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
+                # Check if we have linear fit data
+                has_linear = any(getattr(r, 'spring_constant', None) is not None for r in up_results if r)
+                if has_linear:
+                    # Create heatmaps for spring constant and intercept
+                    plotter.plot_well_heatmap(up_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_up_spring_constant.png"), convert_to_mpa=False)
+                    plotter.plot_well_heatmap(up_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_up_intercept.png"), convert_to_mpa=False)
+                    # Print statistics
+                    print_linear_statistics(up_results, "(Up)")
+                else:
+                    plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
         else:
-            # Legacy data: generate a single combined heatmap
+            # Legacy data: generate heatmaps
             summary_csv = write_summary_csv(run_folder_name, results)
-            plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
+            # Check if we have linear fit data
+            has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
+            if has_linear:
+                # Create heatmaps for spring constant and intercept
+                plotter.plot_well_heatmap(summary_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_spring_constant.png"), convert_to_mpa=False)
+                plotter.plot_well_heatmap(summary_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_intercept.png"), convert_to_mpa=False)
+                # Print statistics
+                print_linear_statistics(results)
+            else:
+                plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
 
     # Also generate raw data plots for the run folder
     if run_folder_name:
@@ -512,6 +610,8 @@ def run_main_at_intervals(
     stop_on_error: bool = False,
     move_to_pickup: bool = False,
     pickup_position: tuple[float, float, float] = (0.0, 140.0, 0.0),
+    home_before_measure: bool = True,
+    fit_method: str = "hertzian",
 ):
     """Run main measurement cycles at regular intervals with enhanced error handling and timing.
     
@@ -530,6 +630,7 @@ def run_main_at_intervals(
         stop_on_error: Stop all cycles if one fails (vs continue)
         move_to_pickup: Move to pickup position after each cycle
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
+        fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
     """
     print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
     print(f"📍 Wells: {wells_to_test}")
@@ -565,6 +666,7 @@ def run_main_at_intervals(
                 # Run the measurement cycle
                 main(
                     do_measure=True,
+                    home_before_measure=home_before_measure,
                     wells_to_test=wells_to_test,
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
@@ -575,6 +677,7 @@ def run_main_at_intervals(
                     generate_heatmap=generate_heatmap,
                     move_to_pickup=move_to_pickup,
                     pickup_position=pickup_position,
+                    fit_method=fit_method,
                 )
                 
                 cycle_duration = time.time() - cycle_actual_start
@@ -607,7 +710,7 @@ def run_main_at_intervals(
                     time.sleep(time_until_next)
                 else:
                     print(f"⚠️ Running behind schedule by {abs(time_until_next):.1f}s")
-    
+        
     except KeyboardInterrupt:
         print(f"\n🛑 Scheduled measurements interrupted by user")
     
@@ -669,14 +772,44 @@ if __name__ == "__main__":
     # cnc = CNCController()
     # cnc.home(zero_after=True)
     
-    wells_to_test = ["B11"]
-    main(do_measure=True, 
-         existing_run_folder='run_463_20250917_000017', 
-         wells_to_test=wells_to_test, 
-         contact_method="retrospective", 
-         measure_with_return=True,
-         move_to_pickup=True, # Move to pickup position after measurements
-         pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
+    # wells_to_test = ["B11"]
+    # main(do_measure=True, 
+    #      existing_run_folder='run_463_20250917_000017', 
+    #      wells_to_test=wells_to_test, 
+    #      contact_method="retrospective", 
+    #      measure_with_return=True,
+    #      move_to_pickup=True, # Move to pickup position after measurements
+    #      pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
+    #      )
+    
+    # Test indentation on metal
+    # cnc = CNCController()
+    # force_sensor = ForceSensor()
+    # cnc.move_to_x_y(x=0.0, y=80.0, z=0.0)
+    
+    # Test all wells
+    wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
+    
+    # Choose fitting method:
+    # fit_method="hertzian" - Calculate elastic modulus using Hertzian contact mechanics
+    # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
+    
+    main(
+        cnc=None, # None if do_measure=False
+        force_sensor=None, # None if do_measure=False
+        do_measure=False, 
+        home_before_measure=True,
+        wells_to_test=wells_to_test,
+        contact_method="retrospective",
+        fit_method="linear",  # Try "hertzian" for elastic modulus
+        measure_with_return=True,
+        move_to_pickup=False, # if True, move to pickup position after measurements
+         step_size=0.01,
+         z_target=-30.0, 
+         force_limit=20.0,
+         well_top_z=-18.5,
+        existing_run_folder='run_492_20250925_003012',
+        existing_measured_with_return=True
          )
 
 
