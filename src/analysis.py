@@ -54,10 +54,10 @@ class IndentationAnalyzer:
     INDENTATION_DEPTH_THRESHOLD = 2.5  # mm
     FORCE_THRESHOLD = 2.0              # N
     FORCE_LIMIT = 25.0                 # N (filtering)
-    RETROSPECTIVE_THRESHOLD = 13     # N (retrospective contact detection)
+    RETROSPECTIVE_THRESHOLD = 0.05     # N (retrospective contact detection) (13N for measuring the spring constant of the system)
     
     # System compliance correction for Hertzian fitting
-    K_SYSTEM = 21.73  # N/mm - system stiffness for depth correction
+    K_SYSTEM = 16.09  # N/mm - system stiffness for depth correction
     
      # Well geometry constants
     WELL_DEPTH = 10.9  # mm

@@ -782,9 +782,9 @@ if __name__ == "__main__":
     #      pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
     #      )
     
-    # Test indentation on metal
+    # Test indentation (uncomment them if do_measure=True)
     # cnc = CNCController()
-    # force_sensor = ForceSensor()
+    #force_sensor = ForceSensor()
     # cnc.move_to_x_y(x=0.0, y=80.0, z=0.0)
     
     # Test all wells
@@ -801,14 +801,14 @@ if __name__ == "__main__":
         home_before_measure=True,
         wells_to_test=wells_to_test,
         contact_method="retrospective",
-        fit_method="linear",  # Try "hertzian" for elastic modulus
-        measure_with_return=True,
+        fit_method="hertzian",  # Try "hertzian" for elastic modulus
+        measure_with_return=False,
         move_to_pickup=False, # if True, move to pickup position after measurements
          step_size=0.01,
          z_target=-30.0, 
          force_limit=20.0,
-         well_top_z=-18.5,
-        existing_run_folder='run_492_20250925_003012',
+         well_top_z=-20.0,
+        existing_run_folder='run_460_20250911_062621',
         existing_measured_with_return=True
          )
 
