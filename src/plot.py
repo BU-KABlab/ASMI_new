@@ -503,7 +503,9 @@ class ASMIPlotter:
             method_lower = (method or "").lower().replace(" ", "_")
             method_suffix = f"_{method_lower}" if method_lower else ""
             dir_suffix = f"_{direction_label.lower()}" if direction_label else ""
-            plot_filename = os.path.join(run_folder_plots, f"{result.well}_analysis{method_suffix}{dir_suffix}.png")
+            # Add suffix when system compliance correction is applied (Hertzian only)
+            correction_suffix = "_system_corrected" if (not is_linear and getattr(result, 'corrected_depths', None) is not None) else ""
+            plot_filename = os.path.join(run_folder_plots, f"{result.well}_analysis{method_suffix}{dir_suffix}{correction_suffix}.png")
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
             print(f"💾 Plot saved to: {plot_filename}")
 

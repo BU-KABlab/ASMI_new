@@ -19,12 +19,12 @@ from .version import __version__
 
 # === CNC CONFIGURATION ===
 BAUD_RATE = 115200
-GRBL_PORT = '/dev/cu.usbserial-130'
+GRBL_PORT = '/dev/cu.usbserial-1130'
 
 # === WELL PLATE GEOMETRY ===
-A1_X = 97.5 # original: 99.0
-A1_Y = 59.5 # original: 48.5
-Z_INITIAL = 0 # safety height
+A1_X = -149.0
+A1_Y = -154.5
+Z_INITIAL = -50.0 # safety height-
 WELL_SPACING = 9.0
 ROWS = [str(i) for i in range(1, 13)]
 COLS = ["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -35,6 +35,8 @@ class CNCController:
         self.port = port
         self.baudrate = baudrate
         self.ser = serial.Serial(self.port, self.baudrate)
+        # Track work coordinate offset for WPos computation when GRBL does not report WPos/WCO
+        self.work_offset = (0.0, 0.0, 0.0)
         self.ser.write(b"\r\n\r\n")
         self.ser.reset_input_buffer()
         self.send_gcode("$X")  # Unlock
@@ -59,8 +61,7 @@ class CNCController:
 
 
     def wait_for_idle(self, timeout=10.0):
-        """Wait for CNC to become idle with timeout"""
-        idle_counter = 0
+        """Wait for CNC to become idle with timeout (fast polling)."""
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -70,21 +71,19 @@ class CNCController:
                 status = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 
                 if "Idle" in status:
-                    idle_counter += 1
-                    if idle_counter >= 3:  # Reduced from 10 to 3 for faster response
-                        print("✅ CNC is idle")
-                        return True
+                    print("✅ CNC is idle")
+                    return True
                 elif "Alarm" in status or "Error" in status:
                     print(f"⚠️ CNC in error state: {status}")
                     return False
                 elif "Run" in status:
-                    idle_counter = 0  # Reset counter if still running
+                    pass
                     
-                time.sleep(0.1)
+                time.sleep(0.02)  # 20ms poll
                 
             except Exception as e:
                 print(f"⚠️ Error checking CNC status: {e}")
-                time.sleep(0.1)
+                time.sleep(0.02)
         
         print(f"⚠️ Timeout waiting for CNC to become idle after {timeout}s")
         return False
@@ -124,28 +123,31 @@ class CNCController:
             current_z = current_pos[2]
             if current_z != Z_INITIAL:
                 self.move_to_z(Z_INITIAL)
-                time.sleep(1)
+                time.sleep(0.5)
         
         col = col.upper()
         if col not in COLS or row not in ROWS:
             raise ValueError(f"Invalid well: {col}{row}")
-        x_target = A1_X + COLS.index(col) * WELL_SPACING
-        y_target = A1_Y + (int(row) - 1) * WELL_SPACING
+        
+        x_target = A1_X + (int(row) - 1) * WELL_SPACING
+        # Map columns so that A → 0 offset from A1_Y, B → 1 spacing, etc.
+        y_target = A1_Y - (COLS.index(col)) * WELL_SPACING
         
         # Move to X,Y at safety height first, then to target Z
         print(f"📍 Moving to well {col}{row}: X={x_target:.3f}, Y={y_target:.3f}")
         gcode_xy = f"G01 X{x_target:.3f} Y{y_target:.3f} Z{Z_INITIAL:.3f} F{FEEDRATE}"
         self.send_gcode(gcode_xy)
+        self.wait_for_idle()
         
         # Then move to target Z if different from safety height
         if z != Z_INITIAL:
-            self.move_to_z(z)
+            self.move_to_z(z, feedrate=FEEDRATE, wait_for_idle=True)
         
         # Save position after movement
         self.save_position()
 
 
-    def move_to_z(self, z: float, feedrate: float = FEEDRATE, wait_for_idle: bool = True):
+    def move_to_z(self, z: float, feedrate: float = FEEDRATE, wait_for_idle: bool = False):
         "Move to a designated absolute Z position."
         gcode = f"G01 Z{z:.3f} F{feedrate}"
         
@@ -161,6 +163,11 @@ class CNCController:
             # Fast version - no waiting at all
             self.send_gcode(gcode, wait_for_response=False)
             print(f"🔄 Moving to Z={z:.3f} (no wait)")
+
+
+    def move_to_safe_z(self, feedrate: float = FEEDRATE):
+        """Move to configured safety height Z_INITIAL and wait until idle."""
+        self.move_to_z(Z_INITIAL, feedrate=feedrate, wait_for_idle=True)
 
 
     def home(self, zero_after: bool = True, timeout: float = 30.0):
@@ -204,6 +211,13 @@ class CNCController:
                 print("> Sending: G92 X0 Y0 Z0")
                 self.ser.write(b'G92 X0 Y0 Z0\n')
                 time.sleep(0.5)  # Brief wait for zero command
+                # After zeroing, set internal work offset so WPos = 0 at current MPos
+                pos_after_zero = self.get_current_position()
+                if pos_after_zero:
+                    try:
+                        self.work_offset = (float(pos_after_zero[0]), float(pos_after_zero[1]), float(pos_after_zero[2]))
+                    except Exception:
+                        pass
                 print("✅ CNC homed and zeroed.")
             else:
                 print("✅ CNC homed.")
@@ -238,7 +252,7 @@ class CNCController:
         print("🔓 Unlocking CNC...")
         try:
             self.ser.write(b'$X\n')
-            time.sleep(0.5)
+            time.sleep(0.2)
             print("✅ CNC unlocked")
             return True
         except Exception as e:
@@ -266,14 +280,39 @@ class CNCController:
             response = self.ser.readline().decode('utf-8', errors='ignore').strip()
             print(f"📡 After reset response: {response}")
         
-        if "MPos:" in response:
+        if "MPos:" in response: # MPos is the machine position
             try:
                 mpos_section = response.split("MPos:")[1].split("|")[0]
                 x, y, z = map(float, mpos_section.split(","))
+                # Compute/parse work position (WPos)
+                wpos = None
+                if "WPos:" in response: # WPos is the work position
+                    try:
+                        wpos_section = response.split("WPos:")[1].split("|")[0]
+                        wx, wy, wz = map(float, wpos_section.split(","))
+                        wpos = (wx, wy, wz)
+                    except Exception:
+                        wpos = None
+                elif "WCO:" in response: # WCO is the work coordinate offset
+                    try:
+                        wco_section = response.split("WCO:")[1].split("|")[0]
+                        ox, oy, oz = map(float, wco_section.split(","))
+                        wpos = (x - ox, y - oy, z - oz)
+                    except Exception:
+                        wpos = None
+                if wpos is None:
+                    try:
+                        ox, oy, oz = self.work_offset
+                        wpos = (x - ox, y - oy, z - oz)
+                    except Exception:
+                        wpos = (x, y, z)
+
                 print(f"✅ Machine position: X={x}, Y={y}, Z={z}")
+                print(f"✅ Work position:    X={wpos[0]}, Y={wpos[1]}, Z={wpos[2]}")
                 end_time = time.time()
                 print(f"Time taken to get current position: {end_time - start_time} seconds")
-                return [x, y, z]
+                # Return work coordinates so callers operate in the same frame as G-code (after G92)
+                return [wpos[0], wpos[1], wpos[2]]
             
             except Exception as e:
                 print(f"⚠️ Failed to parse position: {e}")
@@ -589,7 +628,9 @@ class CNCController:
         self.save_position()
         
     def move_to_x_y(self, x: float, y: float, z: float = Z_INITIAL, feedrate: float = FEEDRATE):
-        """Move to a designated absolute X,Y position."""
+        """Move to a designated absolute X,Y position.
+        Used by lock-XY mode in ForceMonitoring to override per-well XY.
+        """
         gcode = f"G01 X{x:.3f} Y{y:.3f} Z{z:.3f} F{feedrate}"
         self.send_gcode(gcode)
         self.save_position()

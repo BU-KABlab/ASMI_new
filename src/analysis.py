@@ -54,10 +54,10 @@ class IndentationAnalyzer:
     INDENTATION_DEPTH_THRESHOLD = 2.5  # mm
     FORCE_THRESHOLD = 2.0              # N
     FORCE_LIMIT = 25.0                 # N (filtering)
-    RETROSPECTIVE_THRESHOLD = 0.05     # N (retrospective contact detection) (13N for measuring the spring constant of the system)
+    RETROSPECTIVE_THRESHOLD = 1.0    # N (retrospective contact detection) (13N for measuring the spring constant of the system)
     
     # System compliance correction for Hertzian fitting
-    K_SYSTEM = 16.09  # N/mm - system stiffness for depth correction
+    K_SYSTEM = 64.27  # N/mm - system stiffness for depth correction
     
      # Well geometry constants
     WELL_DEPTH = 10.9  # mm
@@ -376,6 +376,8 @@ class IndentationAnalyzer:
         filename: Optional[str] = None,
         contact_method: str = "true_contact",
         fit_method: str = "hertzian",  # "hertzian" or "linear"
+        apply_system_correction: bool = True,
+        retrospective_threshold: Optional[float] = None,
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
@@ -420,7 +422,8 @@ class IndentationAnalyzer:
             first_idx = self.find_extraploation_contact_point(z_positions, raw_forces, baseline, baseline_std)
             label_method = "extrapolation"
         elif contact_method == "retrospective":
-            first_idx = self.find_retrospective_contact_point(corrected_forces, threshold = self.RETROSPECTIVE_THRESHOLD, z_positions = z_positions)
+            thr = self.RETROSPECTIVE_THRESHOLD if retrospective_threshold is None else float(retrospective_threshold)
+            first_idx = self.find_retrospective_contact_point(corrected_forces, threshold = thr, z_positions = z_positions)
             label_method = "retrospective"
         elif contact_method == "simple_threshold":
             first_idx = self.find_contact_point(raw_forces, baseline, baseline_std)
@@ -510,10 +513,14 @@ class IndentationAnalyzer:
             
         else:
             # Hertzian fitting (default)
-            print("🔬 Using Hertzian fitting with system compliance correction")
-            # Apply system compliance correction: d_true = d_measure - force / k_system
-            d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr)
-            print(f"🔧 Applied system compliance correction (k_system = {self.K_SYSTEM} N/mm)")
+            if apply_system_correction:
+                print("🔬 Using Hertzian fitting with system compliance correction")
+                # Apply system compliance correction: d_true = d_measure - force / k_system
+                d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr)
+                print(f"🔧 Applied system compliance correction (k_system = {self.K_SYSTEM} N/mm)")
+            else:
+                print("🔬 Using Hertzian fitting (no system compliance correction)")
+                d_corrected = d_arr
             lb = [0.0, -0.1]
             ub = [np.inf, 2.0]
             fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
@@ -547,7 +554,8 @@ class IndentationAnalyzer:
             spring_constant = None
             linear_r2 = None
             linear_intercept = None
-            corrected_depths = list(d_corrected)  # Store corrected depths for plotting
+            # Only populate corrected_depths when system correction is applied
+            corrected_depths = list(d_corrected) if apply_system_correction else None
 
         result = AnalysisResult(
             well=well,

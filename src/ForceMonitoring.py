@@ -43,6 +43,7 @@ def simple_indentation_measurement(
     step_size: float = 0.01,
     force_limit: float = 15.0,
     well_top_z: float = -9.0,
+    locked_xy: tuple[float, float] | None = None,
 ):
     """Measure force during downward indentation until z_target or force_limit.
 
@@ -56,6 +57,7 @@ def simple_indentation_measurement(
         step_size: Step size for movement (default: 0.01 mm)
         force_limit: Force limit in N (default: 15.0 N)
         well_top_z: Z position at well top before indentation (default: -9.0 mm)
+        locked_xy: Optional (x, y) to lock XY for all wells at well_top_z
 
     Writes CSV with metadata and columns: Timestamp(s), Z_Position(mm), Raw_Force(N), Corrected_Force(N).
     """
@@ -91,27 +93,35 @@ def simple_indentation_measurement(
                 filename = os.path.join(run_folder, f"indentation_{ts}.csv")
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
-        # Move to well top position first
+        # Move to well top position first (optionally lock XY)
         if well is not None:
-            col = ''.join([c for c in well if c.isalpha()]).upper()
-            row = ''.join([c for c in well if c.isdigit()])
-            if col and row:
+            if locked_xy is not None:
                 try:
-                    print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
-                    cnc.move_to_well(col, row, z=well_top_z)
-                    print(f"✅ Positioned at well {well} top")
+                    # lock_xy: override well XY with fixed coordinates
+                    # 1) raise to safety Z, 2) move XY at safety, 3) go down to well_top_z
+                    print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={well_top_z:.1f}mm for well {well}...")
+                    cnc.move_to_safe_z()
+                    cnc.move_to_x_y(locked_xy[0], locked_xy[1])
+                    cnc.move_to_z(well_top_z, wait_for_idle=True)
+                    print(f"✅ Positioned at locked XY for well {well}")
                 except Exception as e:
-                    print(f"⚠️ Could not move to well {well}: {e}")
+                    print(f"⚠️ Could not move to locked XY for well {well}: {e}")
                     return False
-        else:
-            # For current position measurements, move to well_top_z
-            try:
-                print(f"📍 Moving to well top position Z={well_top_z:.1f}mm...")
-                cnc.move_to_z(well_top_z)
-                print(f"✅ Positioned at well top")
-            except Exception as e:
-                print(f"⚠️ Could not move to well top position: {e}")
-                return False
+            else:
+                col = ''.join([c for c in well if c.isalpha()]).upper()
+                row = ''.join([c for c in well if c.isdigit()])
+                if col and row:
+                    try:
+                        print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
+                        cnc.move_to_well(col, row, z=well_top_z)
+                        print(f"✅ Positioned at well {well} top")
+                    except Exception as e:
+                        print(f"⚠️ Could not move to well {well}: {e}")
+                        return False
+        else: # well is None, so measure at current position
+            print(f"📍 Moving to current position Z={well_top_z:.1f}mm...")
+            cnc.move_to_z(well_top_z)
+            print(f"✅ Positioned at current position")
 
         measurements: list[list[float]] = []
         data_count = 0
@@ -127,21 +137,27 @@ def simple_indentation_measurement(
                 print(f"🎯 Reached z_target {z_target:.3f}mm")
                 break
             next_z = current_z - step_size
-            cnc.move_to_z(next_z, wait_for_idle=False)
-            time.sleep(0.01)
-
+            # Use low feedrate so each step finishes quickly and precisely
+            cnc.move_to_z(next_z, wait_for_idle=True)
+            
             current = cnc.get_current_position() or (None, None, next_z)
             force = force_sensor.get_force_reading()
             corrected = force - baseline_avg
             data_count += 1
             t = time.time()
             measurements.append([t, float(current[2]), force, corrected])
+            # Progress print every 10 steps
+            if data_count % 10 == 0:
+                try:
+                    print(f"📉 Step #{data_count}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                except Exception:
+                    pass
             if abs(corrected) > force_limit:
                 print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
                 break
 
-        # Return to safe Z
-        cnc.move_to_z(0)
+        # Return to safety height before moving to next well
+        cnc.move_to_safe_z()
 
         # Write CSV
         with open(filename, 'w', newline='') as f:
@@ -176,6 +192,7 @@ def simple_indentation_with_return_measurement(
     step_size: float = 0.01,
     force_limit: float = 15.0,
     well_top_z: float = -9.0,
+    locked_xy: tuple[float, float] | None = None,
 ):
     """Measure during downward and upward (return) movement; include 'Direction' column.
 
@@ -189,6 +206,7 @@ def simple_indentation_with_return_measurement(
         step_size: Step size for movement (default: 0.01 mm)
         force_limit: Force limit in N (default: 15.0 N)
         well_top_z: Z position at well top before indentation (default: -9.0 mm)
+        locked_xy: Optional (x, y) to lock XY for all wells at well_top_z
 
     Data header: Timestamp(s), Z_Position(mm), Raw_Force(N), Corrected_Force(N), Direction
     Direction is 'down' for indentation and 'up' for return.
@@ -222,18 +240,31 @@ def simple_indentation_with_return_measurement(
                 filename = os.path.join(run_folder, f"indentation_{ts}.csv")
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
-        # Move to well top position first
+        # Move to well top position first (optionally lock XY)
         if well is not None:
-            col = ''.join([c for c in well if c.isalpha()]).upper()
-            row = ''.join([c for c in well if c.isdigit()])
-            if col and row:
+            if locked_xy is not None:
                 try:
-                    print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
-                    cnc.move_to_well(col, row, z=well_top_z)
-                    print(f"✅ Positioned at well {well} top")
+                    # lock_xy: override well XY with fixed coordinates
+                    # 1) raise to safety Z, 2) move XY at safety, 3) go down to well_top_z
+                    print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={well_top_z:.1f}mm for well {well}...")
+                    cnc.move_to_safe_z()
+                    cnc.move_to_x_y(locked_xy[0], locked_xy[1])
+                    cnc.move_to_z(well_top_z, wait_for_idle=True)
+                    print(f"✅ Positioned at locked XY for well {well}")
                 except Exception as e:
-                    print(f"⚠️ Could not move to well {well}: {e}")
+                    print(f"⚠️ Could not move to locked XY for well {well}: {e}")
                     return False
+            else:
+                col = ''.join([c for c in well if c.isalpha()]).upper()
+                row = ''.join([c for c in well if c.isdigit()])
+                if col and row:
+                    try:
+                        print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
+                        cnc.move_to_well(col, row, z=well_top_z)
+                        print(f"✅ Positioned at well {well} top")
+                    except Exception as e:
+                        print(f"⚠️ Could not move to well {well}: {e}")
+                        return False
         else:
             # For current position measurements, move to well_top_z
             try:
@@ -257,13 +288,17 @@ def simple_indentation_with_return_measurement(
                 print(f"🎯 Reached z_target {z_target:.3f}mm")
                 break
             next_z = current_z - step_size
-            cnc.move_to_z(next_z, wait_for_idle=False)
-            time.sleep(0.01)
+            cnc.move_to_z(next_z, wait_for_idle=True)
             current = cnc.get_current_position() or (None, None, next_z)
             force = force_sensor.get_force_reading()
             corrected = force - baseline_avg
             t = time.time()
             measurements.append([t, float(current[2]), force, corrected, 'down'])
+            if len(measurements) % 10 == 0:
+                try:
+                    print(f"📉 Down #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                except Exception:
+                    pass
             if abs(corrected) > force_limit:
                 print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
                 break
@@ -277,16 +312,20 @@ def simple_indentation_with_return_measurement(
             if current_z >= well_top_z:
                 break
             next_z = min(current_z + step_size, well_top_z)
-            cnc.move_to_z(next_z, wait_for_idle=False)
-            time.sleep(0.01)
+            cnc.move_to_z(next_z, wait_for_idle=True)
             current = cnc.get_current_position() or (None, None, next_z)
             force = force_sensor.get_force_reading()
             corrected = force - baseline_avg
             t = time.time()
             measurements.append([t, float(current[2]), force, corrected, 'up'])
+            if len(measurements) % 10 == 0:
+                try:
+                    print(f"📈 Up #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                except Exception:
+                    pass
 
-        # Ensure safe Z
-        cnc.move_to_z(well_top_z)
+        # Ensure safety height before moving to next well
+        cnc.move_to_safe_z()
 
         # Write CSV with Direction column
         with open(filename, 'w', newline='') as f:
@@ -350,8 +389,7 @@ def test_step_force_measurement(cnc, force_sensor, target_z=-15.0, step_size=0.2
         while abs(float(current_pos[2])) < abs(target_z):
             next_z = float(current_pos[2]) - step_size # move down
             print(f"🔄 Moving to Z={next_z:.3f}mm...")
-            cnc.move_to_z(next_z, wait_for_idle=False)
-            time.sleep(0.01)  # 10ms delay for CNC to process
+            cnc.move_to_z(next_z)
             current_pos = cnc.get_current_position()
             if not current_pos:
                 print("❌ Could not get position - stopping test")
@@ -368,8 +406,8 @@ def test_step_force_measurement(cnc, force_sensor, target_z=-15.0, step_size=0.2
                 print(f"🛑 Force limit exceeded! Corrected force: {corrected_force:.3f}N > {force_limit:.1f}N")
                 print(f"🛑 Stopping at Z: {current_pos[2]}mm")
                 break
-        print("🔄 Returning to Z=0...")
-        cnc.move_to_z(0)
+        print("🔄 Returning to safety height...")
+        cnc.move_to_safe_z()
         print(f"💾 Saving {len(measurements)} measurements to {filename}")
         with open(filename, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -517,8 +555,8 @@ def dynamic_indentation_measurement(cnc, force_sensor, well=None, z_target=-15.0
                 break
         
         # Return to safety height
-        print("🔄 Returning to Z=0...")
-        cnc.move_to_z(0)
+        print("🔄 Returning to safety height...")
+        cnc.move_to_safe_z()
         
         # Save data
         print(f"💾 Saving {len(measurements)} measurements to {filename}")

@@ -125,7 +125,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian"):
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None):
     """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
@@ -146,6 +146,8 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             filename=datafile,
             contact_method=method_key,
             fit_method=fit_method,
+            apply_system_correction=apply_system_correction,
+            retrospective_threshold=retrospective_threshold,
         )
     except TypeError:
         # Fall back if analyze_well does not accept contact_method
@@ -154,6 +156,8 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             poisson_ratio=None,
             filename=datafile,
             fit_method=fit_method,
+            apply_system_correction=apply_system_correction,
+            retrospective_threshold=retrospective_threshold,
         )
 
     if not result:
@@ -198,6 +202,10 @@ def run_measure_analyze_plot(
     well_top_z: float | None = -9.0,
     run_folder: str | None = None,
     fit_method: str = "hertzian",
+    apply_system_correction: bool = True,
+    retrospective_threshold: float | None = None,
+    lock_xy_single_spot: bool = False,
+    lock_xy_position: tuple[float, float] | None = None,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
@@ -207,14 +215,7 @@ def run_measure_analyze_plot(
     # Generate filename based on whether well is specified
     if well is not None:
         datafile = os.path.join(run_folder, f"well_{well}_{timestamp}.csv")
-        # Move to the requested well (XY) at safety Z before measuring
-        col = ''.join([c for c in well if c.isalpha()]).upper()
-        row = ''.join([c for c in well if c.isdigit()])
-        if col and row:
-            try:
-                cnc.move_to_well(col, row, z=0.0)
-            except Exception as e:
-                print(f"⚠️ Could not move to well {well}: {e}")
+        # Positioning is handled inside measurement functions to avoid duplicate XY/Z moves
     else:
         datafile = os.path.join(run_folder, f"indentation_{timestamp}.csv")
         print(f"📍 Measuring at current position (no well specified)")
@@ -242,6 +243,7 @@ def run_measure_analyze_plot(
                 step_size=step_size, 
                 force_limit=force_limit,
                 well_top_z=well_top_z,  # Move to well top before indentation
+                locked_xy=(lock_xy_position if lock_xy_single_spot else None),
             )
         else:
             ok = simple_indentation_measurement(
@@ -254,6 +256,7 @@ def run_measure_analyze_plot(
                 step_size=step_size,
                 force_limit=force_limit,
                 well_top_z=well_top_z,  # Move to well top before indentation
+                locked_xy=(lock_xy_position if lock_xy_single_spot else None),
             )
         if not ok:
             print("❌ Measurement failed")
@@ -270,26 +273,32 @@ def run_measure_analyze_plot(
         except Exception as e:
             print(f"⚠️ Could not append total time to CSV: {e}")
 
-        # Split into _down and _up CSVs and analyze each with well suffix
-        down_csv, up_csv = split_up_down_csv(datafile)
         per_well_results = []
-        
-        # Generate well names for analysis
-        if well is not None:
-            well_down = f"{well}_down"
-            well_up = f"{well}_up"
+
+        if measure_with_return:
+            # Split into _down and _up CSVs and analyze each with well suffix
+            down_csv, up_csv = split_up_down_csv(datafile)
+            # Generate well names for analysis
+            if well is not None:
+                well_down = f"{well}_down"
+                well_up = f"{well}_up"
+            else:
+                well_down = "indentation_down"
+                well_up = "indentation_up"
+            if down_csv:
+                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+                if r_down:
+                    per_well_results.append(r_down)
+            if up_csv:
+                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+                if r_up:
+                    per_well_results.append(r_up)
         else:
-            well_down = "indentation_down"
-            well_up = "indentation_up"
-            
-        if down_csv:
-            r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method)
-            if r_down:
-                per_well_results.append(r_down)
-        if up_csv:
-            r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method)
-            if r_up:
-                per_well_results.append(r_up)
+            # No return pass: analyze the original file with plain well ID (no _down suffix)
+            plain_well = well.upper() if well is not None else "indentation"
+            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+            if r_single:
+                per_well_results.append(r_single)
 
         return per_well_results, os.path.basename(run_folder)
     except KeyboardInterrupt:
@@ -313,15 +322,30 @@ def write_summary_csv(run_folder_name: str, results: list):
             w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
             for r in results:
                 if r:
+                    # Normalize well IDs: strip _down/_up for heatmap indexing
+                    name_lower = r.well.lower() if getattr(r, 'well', None) else ""
+                    if name_lower.endswith("_down"):
+                        well_core = r.well[: -len("_down")]
+                    elif name_lower.endswith("_up"):
+                        well_core = r.well[: -len("_up")]
+                    else:
+                        well_core = r.well
                     k_val = getattr(r, 'spring_constant', 0)
                     b_val = getattr(r, 'linear_intercept', 0)
                     r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
-                    w.writerow([r.well, k_val, b_val, r2_val])
+                    w.writerow([well_core.upper(), k_val, b_val, r2_val])
         else:
             w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
             for r in results:
                 if r:
-                    w.writerow([r.well, r.elastic_modulus, r.uncertainty, r.fit_quality])
+                    name_lower = r.well.lower() if getattr(r, 'well', None) else ""
+                    if name_lower.endswith("_down"):
+                        well_core = r.well[: -len("_down")]
+                    elif name_lower.endswith("_up"):
+                        well_core = r.well[: -len("_up")]
+                    else:
+                        well_core = r.well
+                    w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
     print(f"💾 Summary CSV written: {out_csv}")
     return out_csv
 
@@ -374,6 +398,10 @@ def main(
     move_to_pickup: bool = False,
     pickup_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
     fit_method: str = "hertzian",  # "hertzian" or "linear"
+    apply_system_correction: bool = True,
+    retrospective_threshold: float | None = None,
+    lock_xy_single_spot: bool = False,
+    lock_xy_position: tuple[float, float] | None = None,
 ):
     """Parameter-based entry point.
     
@@ -406,6 +434,11 @@ def main(
         # Ensure controllers exist
         if cnc is None:
             cnc = CNCController()
+        # Unlock once at the start of the run, then home the CNC
+        try:
+            cnc.unlock()
+        except Exception as e:
+            print(f"⚠️ Unlock failed: {e}")
         # Home the CNC first
         try:
             if home_before_measure and not cnc.home(zero_after=True):
@@ -418,6 +451,24 @@ def main(
 
         # Build iteration list: measure at current position if no wells provided
         wells_iter = wells_to_test if wells_to_test is not None else [None]
+
+        # Resolve locked XY position once per run if requested
+        resolved_locked_xy: tuple[float, float] | None = None
+        if lock_xy_single_spot:
+            if lock_xy_position is not None:
+                resolved_locked_xy = (float(lock_xy_position[0]), float(lock_xy_position[1]))
+            else:
+                try:
+                    pos0 = cnc.get_current_position()
+                    if pos0:
+                        resolved_locked_xy = (float(pos0[0]), float(pos0[1]))
+                        print(f"🔒 Lock-XY mode enabled: using current XY X={resolved_locked_xy[0]:.3f}, Y={resolved_locked_xy[1]:.3f}")
+                    else:
+                        print("⚠️ Could not read current position to lock XY; disabling lock_xy_single_spot for this run")
+                        lock_xy_single_spot = False
+                except Exception as e:
+                    print(f"⚠️ Error determining locked XY: {e}")
+                    lock_xy_single_spot = False
 
         # Measure the wells
         try:
@@ -439,6 +490,10 @@ def main(
                     well_top_z=well_top_z,
                     run_folder=os.path.join("results", "measurements", run_folder_name) if run_folder_name else None,
                     fit_method=fit_method,
+                    apply_system_correction=apply_system_correction,
+                    retrospective_threshold=retrospective_threshold,
+                    lock_xy_single_spot=lock_xy_single_spot,
+                    lock_xy_position=resolved_locked_xy,
                 )
                 if r:
                     if isinstance(r, list):
@@ -494,11 +549,32 @@ def main(
                     continue
                 datafile = os.path.join(run_path, fname)
                 if well_name.lower().endswith("_down"):
-                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_down", contact_method=contact_method, fit_method=fit_method)
+                    r = analyze_file(
+                        datafile=datafile,
+                        well=f"{well_core.upper()}_down",
+                        contact_method=contact_method,
+                        fit_method=fit_method,
+                        apply_system_correction=apply_system_correction,
+                        retrospective_threshold=retrospective_threshold,
+                    )
                 elif well_name.lower().endswith("_up"):
-                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_up", contact_method=contact_method, fit_method=fit_method)
+                    r = analyze_file(
+                        datafile=datafile,
+                        well=f"{well_core.upper()}_up",
+                        contact_method=contact_method,
+                        fit_method=fit_method,
+                        apply_system_correction=apply_system_correction,
+                        retrospective_threshold=retrospective_threshold,
+                    )
                 else:
-                    r = analyze_file(datafile=datafile, well=well_core.upper(), contact_method=contact_method, fit_method=fit_method)
+                    r = analyze_file(
+                        datafile=datafile,
+                        well=well_core.upper(),
+                        contact_method=contact_method,
+                        fit_method=fit_method,
+                        apply_system_correction=apply_system_correction,
+                        retrospective_threshold=retrospective_threshold,
+                    )
                 if r:
                     results.append(r)
 
@@ -783,33 +859,58 @@ if __name__ == "__main__":
     #      )
     
     # Test indentation (uncomment them if do_measure=True)
-    # cnc = CNCController()
-    #force_sensor = ForceSensor()
-    # cnc.move_to_x_y(x=0.0, y=80.0, z=0.0)
+    cnc = CNCController()
+    force_sensor = ForceSensor()
+    
     
     # Test all wells
     wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
     
+    # Test wells
+    # wells_to_test = ['E5', 'E6', 'E7']
     # Choose fitting method:
     # fit_method="hertzian" - Calculate elastic modulus using Hertzian contact mechanics
     # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
     
+    # Test the system compliance k_system
     main(
-        cnc=None, # None if do_measure=False
-        force_sensor=None, # None if do_measure=False
-        do_measure=False, 
+        cnc=cnc, # None if do_measure=False
+        force_sensor=force_sensor, # None if do_measure=False
+        do_measure=True, 
         home_before_measure=True,
         wells_to_test=wells_to_test,
         contact_method="retrospective",
-        fit_method="hertzian",  # Try "hertzian" for elastic modulus
+        retrospective_threshold=13.0, # 13.0N for measuring the spring constant of the system
+        fit_method="linear",  # Try "hertzian" for elastic modulus
         measure_with_return=False,
         move_to_pickup=False, # if True, move to pickup position after measurements
-         step_size=0.01,
-         z_target=-30.0, 
-         force_limit=20.0,
-         well_top_z=-20.0,
-        existing_run_folder='run_460_20250911_062621',
-        existing_measured_with_return=True
+        step_size=0.01,
+        z_target=-90.0,
+        force_limit=20.0,
+        well_top_z=-80.0, #-80.0 for well bottom, -84.0 for alumnium plate
+        lock_xy_single_spot=True,
+        lock_xy_position=(-120, -40.0),
+        existing_run_folder=None,
+        existing_measured_with_return=False
          )
-
-
+    
+    # Test the materials
+    # main(
+    #     cnc=None, # None if do_measure=False
+    #     force_sensor=None, # None if do_measure=False
+    #     do_measure=False, 
+    #     home_before_measure=True,
+    #     wells_to_test=wells_to_test,
+    #     contact_method="retrospective",
+    #     retrospective_threshold=1.0, # 1.0N for measuring the materials
+    #     fit_method="hertzian",  # Try "hertzian" for elastic modulus
+    #     measure_with_return=False,
+    #     move_to_pickup=False, # if True, move to pickup position after measurements
+    #      step_size=0.01,
+    #      z_target=-80.0,
+    #      force_limit=10.0,
+    #      well_top_z=-70.0,
+    #     existing_run_folder="run_531_20251023_052753",
+    #     existing_measured_with_return=False,
+    #     apply_system_correction=True,
+    #      )
