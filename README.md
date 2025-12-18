@@ -76,12 +76,14 @@ main(
 
 | Parameter | Type | Default | Description |
 |----------|------|---------|-------------|
-| `z_target` | float | `-15.0` | Target indentation depth (mm) |
+| `z_target` | float | `-15.0` | Target indentation depth (mm). **Measurement stops when either `z_target` or `force_limit` is reached** |
 | `step_size` | float | `0.02` | Movement step size (mm) |
-| `force_limit` | float | `5.0` | Maximum force limit (N) |
+| `force_limit` | float | `5.0` | Maximum force limit (N). **Measurement stops when either `force_limit` or `z_target` is reached** |
 | `well_top_z` | float | `-9.0` | Well top position before indentation (mm), or `None` to use current Z |
 | `measure_with_return` | bool | `False` | Enable return measurements (up/down) |
 | `retrospective_threshold` | float | `None` | Force threshold for retrospective contact detection (N) |
+
+**Note:** Measurements automatically stop when either the `force_limit` (N) or `z_target` (mm) is reached, whichever comes first.
 
 ### Analysis Parameters
 
@@ -120,13 +122,13 @@ main(
     do_measure=True,
     wells_to_test=["E5", "E6", "E7"],
     contact_method="retrospective",
-    retrospective_threshold=1.0,
+    retrospective_threshold=0.05,
     fit_method="hertzian",
     apply_system_correction=True,
-    z_target=-15.0,
+    z_target=-80.0,
     step_size=0.01,
     force_limit=10.0,
-    well_top_z=-9.0,
+    well_top_z=-70.0,
 )
 ```
 
