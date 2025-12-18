@@ -40,6 +40,8 @@ class AnalysisResult:
     linear_fit_quality: Optional[float] = None
     linear_intercept: Optional[float] = None
     corrected_depths: Optional[list] = None  # For Hertzian fits with system compliance correction
+    original_elastic_modulus: Optional[float] = None  # Original E before system compliance correction
+    original_fit_quality: Optional[float] = None  # Original R² before system compliance correction
 
 
 class IndentationAnalyzer:
@@ -513,14 +515,38 @@ class IndentationAnalyzer:
             
         else:
             # Hertzian fitting (default)
+            original_E = None
+            original_r2 = None
+            
             if apply_system_correction:
                 print("🔬 Using Hertzian fitting with system compliance correction")
+                # First fit original data (without correction) to get original E
+                lb = [0.0, -0.1]
+                ub = [np.inf, 2.0]
+                fit_original = self.fit_hertz_model(d_arr, f_arr, bounds=(lb, ub))
+                if fit_original.params is not None:
+                    A_original = float(fit_original.params[0])
+                    d0_original = float(fit_original.params[1])
+                    original_E = round(self.adjust_E(self.find_E(A_original, poisson_ratio)))
+                    # Calculate R² for original fit
+                    mask_orig = d_arr > d0_original
+                    if np.sum(mask_orig) > 5:
+                        vd_orig = d_arr[mask_orig]
+                        vf_orig = f_arr[mask_orig]
+                        pred_orig = A_original * (vd_orig - d0_original) ** 1.5
+                        ss_res_orig = np.sum((vf_orig - pred_orig) ** 2)
+                        ss_tot_orig = np.sum((vf_orig - np.mean(vf_orig)) ** 2)
+                        original_r2 = 1 - (ss_res_orig / ss_tot_orig) if ss_tot_orig > 0 else 0
+                    else:
+                        original_r2 = 0
+                
                 # Apply system compliance correction: d_true = d_measure - force / k_system
                 d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr)
                 print(f"🔧 Applied system compliance correction (k_system = {self.K_SYSTEM} N/mm)")
             else:
                 print("🔬 Using Hertzian fitting (no system compliance correction)")
                 d_corrected = d_arr
+            
             lb = [0.0, -0.1]
             ub = [np.inf, 2.0]
             fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
@@ -576,6 +602,8 @@ class IndentationAnalyzer:
             linear_fit_quality=linear_r2,
             linear_intercept=linear_intercept,
             corrected_depths=corrected_depths if fit_method.lower() != "linear" else None,
+            original_elastic_modulus=original_E,
+            original_fit_quality=float(round(original_r2, 3)) if original_r2 is not None else None,
         )
 
         # Optional per-direction subset plots when direction info exists
@@ -651,11 +679,11 @@ class IndentationAnalyzer:
 
     # ------------------------------ Plotting API ----------------------------
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
-        from .Plot import plotter
+        from .plot import plotter
         plotter.plot_raw_data_all_wells(run_folder, save_plot)
 
     def plot_raw_force_individual_wells(self, run_folder: str, save_plot: bool = True):
-        from .Plot import plotter
+        from .plot import plotter
         plotter.plot_raw_force_individual_wells(run_folder, save_plot)
 
     def plot_contact_detection(
@@ -672,7 +700,7 @@ class IndentationAnalyzer:
         directions: Optional[List[str]] = None,
         direction_label: Optional[str] = None,
     ):
-        from .Plot import plotter
+        from .plot import plotter
         plotter.plot_contact_detection(
             z_positions,
             raw_forces,
@@ -688,7 +716,7 @@ class IndentationAnalyzer:
         )
 
     def plot_results(self, result: AnalysisResult, save_plot: bool = True, run_folder: Optional[str] = None, method: Optional[str] = None):
-        from .Plot import plotter
+        from .plot import plotter
         try:
             plotter.plot_results(result, save_plot, run_folder, method)
         except TypeError:

@@ -25,8 +25,8 @@ from src.ForceMonitoring import (
     simple_indentation_with_return_measurement,
     get_and_increment_run_count,
 )
-from src.Analysis import IndentationAnalyzer
-from src.Plot import plotter
+from src.analysis import IndentationAnalyzer
+from src.plot import plotter
 from src.version import get_full_version
 from src.CNCController import CNCController
 from src.ForceSensor import ForceSensor
@@ -335,17 +335,34 @@ def write_summary_csv(run_folder_name: str, results: list):
                     r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
                     w.writerow([well_core.upper(), k_val, b_val, r2_val])
         else:
-            w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-            for r in results:
-                if r:
-                    name_lower = r.well.lower() if getattr(r, 'well', None) else ""
-                    if name_lower.endswith("_down"):
-                        well_core = r.well[: -len("_down")]
-                    elif name_lower.endswith("_up"):
-                        well_core = r.well[: -len("_up")]
-                    else:
-                        well_core = r.well
-                    w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
+            # Check if we have system correction (original E values available)
+            has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
+            if has_system_correction:
+                w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
+                for r in results:
+                    if r:
+                        name_lower = r.well.lower() if getattr(r, 'well', None) else ""
+                        if name_lower.endswith("_down"):
+                            well_core = r.well[: -len("_down")]
+                        elif name_lower.endswith("_up"):
+                            well_core = r.well[: -len("_up")]
+                        else:
+                            well_core = r.well
+                        orig_E = getattr(r, 'original_elastic_modulus', r.elastic_modulus)
+                        orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
+                        w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
+            else:
+                w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+                for r in results:
+                    if r:
+                        name_lower = r.well.lower() if getattr(r, 'well', None) else ""
+                        if name_lower.endswith("_down"):
+                            well_core = r.well[: -len("_down")]
+                        elif name_lower.endswith("_up"):
+                            well_core = r.well[: -len("_up")]
+                        else:
+                            well_core = r.well
+                        w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
     print(f"💾 Summary CSV written: {out_csv}")
     return out_csv
 
@@ -610,17 +627,34 @@ def main(
                                 r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
                                 w.writerow([well_core.upper(), k_val, b_val, r2_val])
                     else:
-                        w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-                        for r in subset:
-                            if r:
-                                name_lower = r.well.lower()
-                                if name_lower.endswith("_down"):
-                                    well_core = r.well[: -len("_down")]
-                                elif name_lower.endswith("_up"):
-                                    well_core = r.well[: -len("_up")]
-                                else:
-                                    well_core = r.well
-                                w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
+                        # Check if we have system correction (original E values available)
+                        has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in subset if r)
+                        if has_system_correction:
+                            w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
+                            for r in subset:
+                                if r:
+                                    name_lower = r.well.lower()
+                                    if name_lower.endswith("_down"):
+                                        well_core = r.well[: -len("_down")]
+                                    elif name_lower.endswith("_up"):
+                                        well_core = r.well[: -len("_up")]
+                                    else:
+                                        well_core = r.well
+                                    orig_E = getattr(r, 'original_elastic_modulus', r.elastic_modulus)
+                                    orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
+                                    w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
+                        else:
+                            w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+                            for r in subset:
+                                if r:
+                                    name_lower = r.well.lower()
+                                    if name_lower.endswith("_down"):
+                                        well_core = r.well[: -len("_down")]
+                                    elif name_lower.endswith("_up"):
+                                        well_core = r.well[: -len("_up")]
+                                    else:
+                                        well_core = r.well
+                                    w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
                 return out_csv
 
             if down_results:
@@ -634,7 +668,14 @@ def main(
                     # Print statistics
                     print_linear_statistics(down_results, "(Down)")
                 else:
-                    plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
+                    # Check if we have system correction data
+                    has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in down_results if r)
+                    if has_system_correction:
+                        # Generate two separate heatmaps
+                        plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_down_corrected.png"), title_suffix=" (System Corrected)")
+                        plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_down_original.png"), title_suffix=" (Original)")
+                    else:
+                        plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
             if up_results:
                 up_csv = write_subset("up", up_results)
                 # Check if we have linear fit data
@@ -646,7 +687,14 @@ def main(
                     # Print statistics
                     print_linear_statistics(up_results, "(Up)")
                 else:
-                    plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
+                    # Check if we have system correction data
+                    has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in up_results if r)
+                    if has_system_correction:
+                        # Generate two separate heatmaps
+                        plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_up_corrected.png"), title_suffix=" (System Corrected)")
+                        plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_up_original.png"), title_suffix=" (Original)")
+                    else:
+                        plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
         else:
             # Legacy data: generate heatmaps
             summary_csv = write_summary_csv(run_folder_name, results)
@@ -659,7 +707,14 @@ def main(
                 # Print statistics
                 print_linear_statistics(results)
             else:
-                plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
+                # Check if we have system correction data
+                has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
+                if has_system_correction:
+                    # Generate two separate heatmaps
+                    plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_corrected.png"), title_suffix=" (System Corrected)")
+                    plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_original.png"), title_suffix=" (Original)")
+                else:
+                    plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
 
     # Also generate raw data plots for the run folder
     if run_folder_name:
@@ -859,8 +914,8 @@ if __name__ == "__main__":
     #      )
     
     # Test indentation (uncomment them if do_measure=True)
-    cnc = CNCController()
-    force_sensor = ForceSensor()
+    # cnc = CNCController()
+    #force_sensor = ForceSensor()
     
     
     # Test all wells
@@ -873,44 +928,44 @@ if __name__ == "__main__":
     # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
     
     # Test the system compliance k_system
-    main(
-        cnc=cnc, # None if do_measure=False
-        force_sensor=force_sensor, # None if do_measure=False
-        do_measure=True, 
-        home_before_measure=True,
-        wells_to_test=wells_to_test,
-        contact_method="retrospective",
-        retrospective_threshold=13.0, # 13.0N for measuring the spring constant of the system
-        fit_method="linear",  # Try "hertzian" for elastic modulus
-        measure_with_return=False,
-        move_to_pickup=False, # if True, move to pickup position after measurements
-        step_size=0.01,
-        z_target=-90.0,
-        force_limit=20.0,
-        well_top_z=-80.0, #-80.0 for well bottom, -84.0 for alumnium plate
-        lock_xy_single_spot=True,
-        lock_xy_position=(-120, -40.0),
-        existing_run_folder=None,
-        existing_measured_with_return=False
-         )
-    
-    # Test the materials
     # main(
-    #     cnc=None, # None if do_measure=False
-    #     force_sensor=None, # None if do_measure=False
-    #     do_measure=False, 
+    #     cnc=cnc, # None if do_measure=False
+    #     force_sensor=force_sensor, # None if do_measure=False
+    #     do_measure=True, 
     #     home_before_measure=True,
     #     wells_to_test=wells_to_test,
     #     contact_method="retrospective",
-    #     retrospective_threshold=1.0, # 1.0N for measuring the materials
-    #     fit_method="hertzian",  # Try "hertzian" for elastic modulus
+    #     retrospective_threshold=13.0, # 13.0N for measuring the spring constant of the system
+    #     fit_method="linear",  # Try "hertzian" for elastic modulus
     #     measure_with_return=False,
     #     move_to_pickup=False, # if True, move to pickup position after measurements
-    #      step_size=0.01,
-    #      z_target=-80.0,
-    #      force_limit=10.0,
-    #      well_top_z=-70.0,
-    #     existing_run_folder="run_531_20251023_052753",
-    #     existing_measured_with_return=False,
-    #     apply_system_correction=True,
+    #     step_size=0.01,
+    #     z_target=-90.0,
+    #     force_limit=20.0,
+    #     well_top_z=-80.0, #-80.0 for well bottom, -84.0 for alumnium plate
+    #     lock_xy_single_spot=True,
+    #     lock_xy_position=(-120, -40.0),
+    #     existing_run_folder=None,
+    #     existing_measured_with_return=False
     #      )
+    
+    # Test the materials
+    main(
+        cnc=None, # None if do_measure=False
+        force_sensor=None, # None if do_measure=False
+        do_measure=False, 
+        home_before_measure=True,
+        wells_to_test=wells_to_test,
+        contact_method="retrospective",
+        retrospective_threshold=0.05, # 0.05N for measuring the materials
+        fit_method="hertzian",  # Try "hertzian" for elastic modulus
+        measure_with_return=False,
+        move_to_pickup=False, # if True, move to pickup position after measurements
+         step_size=0.01,
+         z_target=-80.0,
+         force_limit=10.0,
+         well_top_z=-70.0,
+        existing_run_folder="run_732_20251030_122001",
+        existing_measured_with_return=False,
+        apply_system_correction=True,
+         )

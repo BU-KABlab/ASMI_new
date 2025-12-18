@@ -15,7 +15,7 @@ from datetime import datetime
 from .version import __version__
 from .CNCController import CNCController
 from .ForceSensor import ForceSensor
-from .Analysis import IndentationAnalyzer
+from .analysis import IndentationAnalyzer
 
 
 def get_and_increment_run_count(run_count_file='src/run_count.txt'):

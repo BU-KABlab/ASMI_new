@@ -12,12 +12,13 @@ import numpy as np
 import os
 from datetime import datetime
 from .version import __version__
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from dataclasses import dataclass
 import pandas as pd
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 import string
+from scipy.optimize import curve_fit
 
 @dataclass
 class AnalysisResult:
@@ -39,9 +40,74 @@ class AnalysisResult:
 class ASMIPlotter:
     """Handles all plotting functions for ASMI analysis"""
     
+    # Physical constants for E calculation (matching IndentationAnalyzer)
+    SPHERE_RADIUS = 0.0025  # m
+    SPHERE_E = 1.8e11       # Pa
+    SPHERE_NU = 0.28
+    
     def __init__(self):
         # self.FORCE_THRESHOLD = 2.0  # N - force threshold to detect contact
         pass
+    
+    def _fit_hertz_model(self, depths: np.ndarray, forces: np.ndarray, bounds=None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Fit Hertzian model F = A * (d - d0)^1.5
+        
+        Returns:
+            (params, covariance) where params = [A, d0], or (None, None) if fit fails
+        """
+        def hertz(depth, A, d0):
+            return A * np.power(np.maximum(depth - d0, 0), 1.5)
+        
+        if len(depths) < 5 or len(forces) < 5:
+            return None, None
+        if np.any(np.isnan(depths)) or np.any(np.isnan(forces)):
+            return None, None
+        
+        try:
+            if bounds is not None:
+                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03], bounds=bounds)
+            else:
+                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03])
+            return p, cov
+        except Exception:
+            return None, None
+    
+    def _find_E(self, A: float, p_ratio: float) -> float:
+        """Calculate elastic modulus from fit parameter A and Poisson's ratio"""
+        if A <= 0:
+            return 0.0
+        if not (0.1 <= p_ratio <= 0.5):
+            return 0.0
+        
+        R = self.SPHERE_RADIUS
+        A_SI = A * (1000 ** 1.5)
+        E_star = (3.0 / 4.0) * A_SI / (R ** 0.5)
+        E_sample = E_star * (1 - p_ratio ** 2)
+        E_inv = (1 - p_ratio ** 2) / E_sample - (1 - self.SPHERE_NU ** 2) / self.SPHERE_E
+        return 1 / E_inv if E_inv != 0 else E_sample
+    
+    def _adjust_E(self, E: float) -> float:
+        """Apply empirical correction for soft materials"""
+        SOFT_THRESHOLD = 660000  # Pa
+        CORR_A = 457
+        CORR_B = -0.457
+        if E < SOFT_THRESHOLD:
+            factor = CORR_A * pow(E, CORR_B)
+            corrected = E / factor
+            return corrected
+        return E
+    
+    def _calculate_r2(self, depths: np.ndarray, forces: np.ndarray, A: float, d0: float) -> float:
+        """Calculate R² for Hertzian fit"""
+        mask = depths > d0
+        if np.sum(mask) < 5:
+            return 0.0
+        vd = depths[mask]
+        vf = forces[mask]
+        pred = A * (vd - d0) ** 1.5
+        ss_res = np.sum((vf - pred) ** 2)
+        ss_tot = np.sum((vf - np.mean(vf)) ** 2)
+        return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
     
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
         """Plot raw data (absolute values) for all wells in a single plot.
@@ -398,6 +464,8 @@ class ASMIPlotter:
         else:
             plt.figure(figsize=(10, 6))
             depths_array = np.array(result.depth_in_range)
+            forces_array = np.array(result.adjusted_forces) if forces_avail else np.array([])
+            
             if is_linear:
                 # Linear fit uses direct depths (already from contact), no shift needed
                 shifted_depths_all = np.maximum(depths_array, 0)
@@ -411,29 +479,63 @@ class ASMIPlotter:
                 # Hertzian: Handle system compliance correction
                 corrected_depths = getattr(result, 'corrected_depths', None)
                 
-                # Always use original depths as base
-                depths_array = np.array(result.depth_in_range)
-                
                 if use_system_correction:
-                    print("📊 Using system compliance corrected depths for plotting")
-                    # Use corrected depths for fitting
+                    print("📊 Plotting both original and system-corrected fits")
+                    # Use corrected depths for the corrected fit
                     depths_array_corrected = np.array(corrected_depths)
+                    
+                    # Fit original data (without system correction) if we have forces
+                    if forces_avail and len(forces_array) > 0 and len(depths_array) == len(forces_array):
+                        lb = [0.0, -0.1]
+                        ub = [np.inf, 2.0]
+                        params_original, _ = self._fit_hertz_model(depths_array, forces_array, bounds=(lb, ub))
+                        
+                        if params_original is not None:
+                            A_original = float(params_original[0])
+                            d0_original = float(params_original[1])
+                            E_original = self._adjust_E(self._find_E(A_original, result.poisson_ratio))
+                            r2_original = self._calculate_r2(depths_array, forces_array, A_original, d0_original)
+                        else:
+                            A_original = result.fit_A
+                            d0_original = result.fit_d0
+                            E_original = result.elastic_modulus
+                            r2_original = result.fit_quality
+                    else:
+                        # Fallback to using corrected fit parameters if we can't fit original
+                        A_original = result.fit_A
+                        d0_original = result.fit_d0
+                        E_original = result.elastic_modulus
+                        r2_original = result.fit_quality
+                    
+                    # Use corrected fit parameters from result
+                    A_corrected = result.fit_A
+                    d0_corrected = result.fit_d0
+                    E_corrected = result.elastic_modulus
+                    r2_corrected = result.fit_quality
+                    
+                    # Shift depths by their respective d0 values
+                    shifted_depths_original = np.maximum(depths_array - d0_original, 0)
+                    shifted_depths_corrected = np.maximum(depths_array_corrected - d0_corrected, 0)
+                    
+                    # Fit curve domains
+                    max_depth_original = float(np.max(shifted_depths_original)) if shifted_depths_original.size > 0 else 2.0
+                    max_depth_corrected = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
+                    max_depth = max(max_depth_original, max_depth_corrected)
+                    
+                    fit_depths_original = np.linspace(0, max_depth_original, 100)
+                    fit_depths_corrected = np.linspace(0, max_depth_corrected, 100)
+                    fit_forces_original = A_original * (fit_depths_original) ** 1.5
+                    fit_forces_corrected = A_corrected * (fit_depths_corrected) ** 1.5
                 else:
-                    # No correction, use original depths for both
+                    # No correction, use original depths
                     depths_array_corrected = depths_array
-                
-                # Shift corrected depths by d0 for fitting
-                shifted_depths_corrected = np.maximum(depths_array_corrected - result.fit_d0, 0)
-                # Shift original depths by d0 for comparison
-                shifted_depths_original = np.maximum(depths_array - result.fit_d0, 0)
-                
-                # Fit curve domain: from 0 to max shifted depth (use corrected for fitting)
-                max_depth = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
-                fit_depths = np.linspace(0, max_depth, 100)
-                fit_forces = result.fit_A * (fit_depths) ** 1.5
+                    shifted_depths_corrected = np.maximum(depths_array - result.fit_d0, 0)
+                    shifted_depths_original = None
+                    max_depth = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
+                    fit_depths = np.linspace(0, max_depth, 100)
+                    fit_forces = result.fit_A * (fit_depths) ** 1.5
 
             if forces_avail:
-                forces_array = np.array(result.adjusted_forces)
                 if is_linear:
                     # For linear fits, plot the actual data points
                     if shifted_depths_all.size > 0 and forces_array.size == shifted_depths_all.size:
@@ -479,15 +581,22 @@ class ASMIPlotter:
                 r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
                 plt.title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}')
             else:
-                plt.plot(fit_depths, fit_forces, 'r-', label=f'Hertzian Fit (A={result.fit_A:.3f}, d0={result.fit_d0:.3f} mm)')
-                # Explicitly mark the model contact at (0,0)
-                plt.scatter([0], [0], c='k', marker='x', s=40, label='Model contact (0,0)')
+                if use_system_correction:
+                    # Plot both fits in different colors
+                    plt.plot(fit_depths_original, fit_forces_original, 'b-', linewidth=2, 
+                            label=f'Original Fit: E = {E_original/1e6:.2f} MPa, R² = {r2_original:.3f}')
+                    plt.plot(fit_depths_corrected, fit_forces_corrected, 'r-', linewidth=2,
+                            label=f'System Corrected Fit: E = {E_corrected/1e6:.2f} MPa, R² = {r2_corrected:.3f}')
+                else:
+                    # Single fit when no system correction
+                    plt.plot(fit_depths, fit_forces, 'r-', linewidth=2, 
+                            label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, R² = {result.fit_quality:.3f}')
+                
                 plt.xlabel('Indentation Depth (mm)')
                 plt.ylabel('Force (N)')
-                dir_title = f" ({direction_label})" if direction_label else ""
-                # Add system compliance correction note to title
-                compliance_note = " (system corrected)" if getattr(result, 'corrected_depths', None) is not None else ""
-                plt.title(f'Well {result.well}{dir_title}: E = {result.elastic_modulus} Pa, R² = {result.fit_quality}{compliance_note}')
+                # Simplified title: just "Well E5 measurement" (or well name)
+                well_name = result.well.upper()
+                plt.title(f'Well {well_name} measurement')
             plt.legend()
             plt.grid(True, alpha=0.3)
 
@@ -534,10 +643,13 @@ class ASMIPlotter:
 
         plt.close()
 
-    def plot_well_heatmap(self, summary_csv: str, value_col: str = 'ElasticModulus', cmap: str = 'viridis', annotate: bool = True, save_path: Optional[str] = None, convert_to_mpa: bool = True):
+    def plot_well_heatmap(self, summary_csv: str, value_col: str = 'ElasticModulus', cmap: str = 'viridis', annotate: bool = True, save_path: Optional[str] = None, convert_to_mpa: bool = True, title_suffix: str = ""):
         """Plot a 96-well plate heatmap from a summary CSV.
 
         CSV columns expected: 'Well', value_col (default 'ElasticModulus'), optional 'R2', optional 'Std'.
+        
+        Args:
+            title_suffix: Optional suffix to add to the title (e.g., " (Original)" or " (System Corrected)")
         """
         ROWS = list(string.ascii_uppercase[:8])
         COLS = list(range(1, 13))
@@ -557,7 +669,7 @@ class ASMIPlotter:
             value = row[value_col]
             if well in well_to_idx and pd.notnull(value) and not isinstance(value, (pd.Series, _np.ndarray)):
                 i, j = well_to_idx[well]
-                if convert_to_mpa and value_col == 'ElasticModulus':
+                if convert_to_mpa and (value_col == 'ElasticModulus' or value_col == 'ElasticModulus_Original'):
                     heatmap[i, j] = value / 1e6
                 else:
                     heatmap[i, j] = value
@@ -568,7 +680,7 @@ class ASMIPlotter:
                 if has_std and stdmap is not None:
                     stdval = row['Std']
                     if pd.notnull(stdval) and not isinstance(stdval, (pd.Series, _np.ndarray)):
-                        stdmap[i, j] = (stdval / 1e6) if (convert_to_mpa and value_col == 'ElasticModulus') else stdval
+                        stdmap[i, j] = (stdval / 1e6) if (convert_to_mpa and (value_col == 'ElasticModulus' or value_col == 'ElasticModulus_Original')) else stdval
 
         fig, ax = plt.subplots(figsize=(12, 7))
         norm = mcolors.Normalize(vmin=_np.nanmin(heatmap), vmax=_np.nanmax(heatmap))
@@ -603,10 +715,17 @@ class ASMIPlotter:
         # Determine appropriate title and units based on value column
         if value_col == 'ElasticModulus':
             if convert_to_mpa:
-                title = "96-Well Plate Young's Modulus Heatmap (MPa)"
+                title = f"96-Well Plate Young's Modulus Heatmap (MPa){title_suffix}"
                 unit_label = "MPa"
             else:
-                title = "96-Well Plate Young's Modulus Heatmap (Pa)"
+                title = f"96-Well Plate Young's Modulus Heatmap (Pa){title_suffix}"
+                unit_label = "Pa"
+        elif value_col == 'ElasticModulus_Original':
+            if convert_to_mpa:
+                title = f"96-Well Plate Young's Modulus Heatmap - Original (MPa){title_suffix}"
+                unit_label = "MPa"
+            else:
+                title = f"96-Well Plate Young's Modulus Heatmap - Original (Pa){title_suffix}"
                 unit_label = "Pa"
         elif value_col == 'SpringConstant_k':
             title = "96-Well Plate Spring Constant Heatmap (N/mm)"
