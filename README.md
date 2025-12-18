@@ -16,10 +16,21 @@ pip install -r requirements.txt
 
 Edit the `main()` function call at the bottom of `main_asmi.py` to configure your measurement parameters.
 
-### Basic Measurement
+**Important:** Before calling `main()`, you must create or comment out the hardware objects:
+
+### For Measurements (Hardware Required)
 
 ```python
+from src.CNCController import CNCController
+from src.ForceSensor import ForceSensor
+
+# Create hardware objects
+cnc = CNCController()
+force_sensor = ForceSensor()
+
 main(
+    cnc=cnc,
+    force_sensor=force_sensor,
     do_measure=True,
     wells_to_test=["A1", "A2", "B1"],
     contact_method="retrospective",
@@ -28,10 +39,18 @@ main(
 )
 ```
 
-### Analyze Existing Data
+### For Analysis Only (No Hardware Connection)
 
 ```python
+# Comment out hardware objects to avoid connection issues
+# from src.CNCController import CNCController
+# from src.ForceSensor import ForceSensor
+# cnc = CNCController()
+# force_sensor = ForceSensor()
+
 main(
+    cnc=None,  # Must be None for analysis-only
+    force_sensor=None,  # Must be None for analysis-only
     do_measure=False,
     existing_run_folder="run_732_20251030_122001",
     wells_to_test=["E5", "E6", "E7"],
@@ -81,15 +100,23 @@ main(
 | `pickup_position` | tuple | `(0.0, 0.0, 0.0)` | XYZ coordinates for pickup position (mm) |
 | `lock_xy_single_spot` | bool | `False` | Lock XY position for single spot measurements |
 | `lock_xy_position` | tuple | `None` | Specific XY coordinates to lock (mm) |
-| `cnc` | CNCController | `None` | Pre-initialized CNC controller (auto-created if `None`) |
-| `force_sensor` | ForceSensor | `None` | Pre-initialized force sensor (auto-created if `None`) |
+| `cnc` | CNCController | `None` | **For measurements:** Create `CNCController()` object. **For analysis-only:** Must be `None` to avoid connection errors |
+| `force_sensor` | ForceSensor | `None` | **For measurements:** Create `ForceSensor()` object. **For analysis-only:** Must be `None` to avoid connection errors |
 
 ## Usage Examples
 
 ### Example 1: Measure Specific Wells
 
 ```python
+from src.CNCController import CNCController
+from src.ForceSensor import ForceSensor
+
+cnc = CNCController()
+force_sensor = ForceSensor()
+
 main(
+    cnc=cnc,
+    force_sensor=force_sensor,
     do_measure=True,
     wells_to_test=["E5", "E6", "E7"],
     contact_method="retrospective",
@@ -106,7 +133,15 @@ main(
 ### Example 2: Analyze Existing Data with System Correction
 
 ```python
+# Comment out hardware objects for analysis-only
+# from src.CNCController import CNCController
+# from src.ForceSensor import ForceSensor
+# cnc = CNCController()
+# force_sensor = ForceSensor()
+
 main(
+    cnc=None,  # Must be None to avoid connection attempts
+    force_sensor=None,  # Must be None to avoid connection attempts
     do_measure=False,
     existing_run_folder="run_732_20251030_122001",
     wells_to_test=["E5", "E6", "E7"],
@@ -120,7 +155,15 @@ main(
 ### Example 3: Measure with Return (Up/Down)
 
 ```python
+from src.CNCController import CNCController
+from src.ForceSensor import ForceSensor
+
+cnc = CNCController()
+force_sensor = ForceSensor()
+
 main(
+    cnc=cnc,
+    force_sensor=force_sensor,
     do_measure=True,
     wells_to_test=["A1", "A2"],
     measure_with_return=True,
@@ -133,7 +176,15 @@ main(
 ### Example 4: Measure System Compliance (Linear Fit)
 
 ```python
+from src.CNCController import CNCController
+from src.ForceSensor import ForceSensor
+
+cnc = CNCController()
+force_sensor = ForceSensor()
+
 main(
+    cnc=cnc,
+    force_sensor=force_sensor,
     do_measure=True,
     wells_to_test=[None],  # Current position
     contact_method="retrospective",
