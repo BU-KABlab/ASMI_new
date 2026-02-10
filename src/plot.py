@@ -8,6 +8,7 @@ License: MIT
 """
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import os
 from datetime import datetime
@@ -18,7 +19,7 @@ import pandas as pd
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 import string
-from scipy.optimize import curve_fit
+from .analysis import IndentationAnalyzer
 
 @dataclass
 class AnalysisResult:
@@ -40,74 +41,10 @@ class AnalysisResult:
 class ASMIPlotter:
     """Handles all plotting functions for ASMI analysis"""
     
-    # Physical constants for E calculation (matching IndentationAnalyzer)
-    SPHERE_RADIUS = 0.0025  # m
-    SPHERE_E = 1.8e11       # Pa
-    SPHERE_NU = 0.28
-    
     def __init__(self):
-        # self.FORCE_THRESHOLD = 2.0  # N - force threshold to detect contact
-        pass
-    
-    def _fit_hertz_model(self, depths: np.ndarray, forces: np.ndarray, bounds=None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Fit Hertzian model F = A * (d - d0)^1.5
-        
-        Returns:
-            (params, covariance) where params = [A, d0], or (None, None) if fit fails
-        """
-        def hertz(depth, A, d0):
-            return A * np.power(np.maximum(depth - d0, 0), 1.5)
-        
-        if len(depths) < 5 or len(forces) < 5:
-            return None, None
-        if np.any(np.isnan(depths)) or np.any(np.isnan(forces)):
-            return None, None
-        
-        try:
-            if bounds is not None:
-                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03], bounds=bounds)
-            else:
-                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03])
-            return p, cov
-        except Exception:
-            return None, None
-    
-    def _find_E(self, A: float, p_ratio: float) -> float:
-        """Calculate elastic modulus from fit parameter A and Poisson's ratio"""
-        if A <= 0:
-            return 0.0
-        if not (0.1 <= p_ratio <= 0.5):
-            return 0.0
-        
-        R = self.SPHERE_RADIUS
-        A_SI = A * (1000 ** 1.5)
-        E_star = (3.0 / 4.0) * A_SI / (R ** 0.5)
-        E_sample = E_star * (1 - p_ratio ** 2)
-        E_inv = (1 - p_ratio ** 2) / E_sample - (1 - self.SPHERE_NU ** 2) / self.SPHERE_E
-        return 1 / E_inv if E_inv != 0 else E_sample
-    
-    def _adjust_E(self, E: float) -> float:
-        """Apply empirical correction for soft materials"""
-        SOFT_THRESHOLD = 660000  # Pa
-        CORR_A = 457
-        CORR_B = -0.457
-        if E < SOFT_THRESHOLD:
-            factor = CORR_A * pow(E, CORR_B)
-            corrected = E / factor
-            return corrected
-        return E
-    
-    def _calculate_r2(self, depths: np.ndarray, forces: np.ndarray, A: float, d0: float) -> float:
-        """Calculate R² for Hertzian fit"""
-        mask = depths > d0
-        if np.sum(mask) < 5:
-            return 0.0
-        vd = depths[mask]
-        vf = forces[mask]
-        pred = A * (vd - d0) ** 1.5
-        ss_res = np.sum((vf - pred) ** 2)
-        ss_tot = np.sum((vf - np.mean(vf)) ** 2)
-        return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        # Create an analyzer instance to use for analysis calculations
+        # This ensures we use the same analysis logic as the main analyzer
+        self._analyzer = IndentationAnalyzer()
     
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
         """Plot raw data (absolute values) for all wells in a single plot.
@@ -488,13 +425,21 @@ class ASMIPlotter:
                     if forces_avail and len(forces_array) > 0 and len(depths_array) == len(forces_array):
                         lb = [0.0, -0.1]
                         ub = [np.inf, 2.0]
-                        params_original, _ = self._fit_hertz_model(depths_array, forces_array, bounds=(lb, ub))
+                        fit_original = self._analyzer.fit_hertz_model(depths_array, forces_array, bounds=(lb, ub))
                         
-                        if params_original is not None:
-                            A_original = float(params_original[0])
-                            d0_original = float(params_original[1])
-                            E_original = self._adjust_E(self._find_E(A_original, result.poisson_ratio))
-                            r2_original = self._calculate_r2(depths_array, forces_array, A_original, d0_original)
+                        if fit_original.params is not None:
+                            A_original = float(fit_original.params[0])
+                            d0_original = float(fit_original.params[1])
+                            E_original = self._analyzer.adjust_E(self._analyzer.find_E(A_original, result.poisson_ratio))
+                            # Calculate R² using analyzer's method
+                            mask = depths_array > d0_original
+                            if np.sum(mask) > 5:
+                                vd = depths_array[mask]
+                                vf = forces_array[mask]
+                                pred = A_original * (vd - d0_original) ** 1.5
+                                r2_original = self._analyzer.calculate_r_squared(vf, pred)
+                            else:
+                                r2_original = 0.0
                         else:
                             A_original = result.fit_A
                             d0_original = result.fit_d0
@@ -584,13 +529,13 @@ class ASMIPlotter:
                 if use_system_correction:
                     # Plot both fits in different colors
                     plt.plot(fit_depths_original, fit_forces_original, 'b-', linewidth=2, 
-                            label=f'Original Fit: E = {E_original/1e6:.2f} MPa, R² = {r2_original:.3f}')
+                            label=f'Original Fit: E = {E_original/1e6:.2f} MPa, A = {A_original:.3f}, d0 = {d0_original:.3f} mm, R² = {r2_original:.3f}')
                     plt.plot(fit_depths_corrected, fit_forces_corrected, 'r-', linewidth=2,
-                            label=f'System Corrected Fit: E = {E_corrected/1e6:.2f} MPa, R² = {r2_corrected:.3f}')
+                            label=f'System Corrected Fit: E = {E_corrected/1e6:.2f} MPa, A = {A_corrected:.3f}, d0 = {d0_corrected:.3f} mm, R² = {r2_corrected:.3f}')
                 else:
                     # Single fit when no system correction
                     plt.plot(fit_depths, fit_forces, 'r-', linewidth=2, 
-                            label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, R² = {result.fit_quality:.3f}')
+                            label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, A = {result.fit_A:.3f}, d0 = {result.fit_d0:.3f} mm, R² = {result.fit_quality:.3f}')
                 
                 plt.xlabel('Indentation Depth (mm)')
                 plt.ylabel('Force (N)')
@@ -643,13 +588,19 @@ class ASMIPlotter:
 
         plt.close()
 
-    def plot_well_heatmap(self, summary_csv: str, value_col: str = 'ElasticModulus', cmap: str = 'viridis', annotate: bool = True, save_path: Optional[str] = None, convert_to_mpa: bool = True, title_suffix: str = ""):
+    def plot_well_heatmap(self, summary_csv: str, value_col: str = 'ElasticModulus', cmap: str = 'viridis', annotate: bool = True, save_path: Optional[str] = None, convert_to_mpa: bool = True, title_suffix: Optional[str] = None):
         """Plot a 96-well plate heatmap from a summary CSV.
 
         CSV columns expected: 'Well', value_col (default 'ElasticModulus'), optional 'R2', optional 'Std'.
         
         Args:
-            title_suffix: Optional suffix to add to the title (e.g., " (Original)" or " (System Corrected)")
+            summary_csv: Path to CSV file with well data
+            value_col: Column name to plot (default: 'ElasticModulus')
+            cmap: Colormap name (default: 'viridis')
+            annotate: Whether to annotate wells with values (default: True)
+            save_path: Path to save the plot (if None, displays plot)
+            convert_to_mpa: Convert Pa to MPa for ElasticModulus (default: True)
+            title_suffix: Optional suffix to add to the title (e.g., " (System Corrected)")
         """
         ROWS = list(string.ascii_uppercase[:8])
         COLS = list(range(1, 13))
@@ -669,7 +620,9 @@ class ASMIPlotter:
             value = row[value_col]
             if well in well_to_idx and pd.notnull(value) and not isinstance(value, (pd.Series, _np.ndarray)):
                 i, j = well_to_idx[well]
-                if convert_to_mpa and (value_col == 'ElasticModulus' or value_col == 'ElasticModulus_Original'):
+                # Convert Pa to MPa for ElasticModulus columns
+                is_elastic_modulus = value_col in ('ElasticModulus', 'ElasticModulus_Original')
+                if convert_to_mpa and is_elastic_modulus:
                     heatmap[i, j] = value / 1e6
                 else:
                     heatmap[i, j] = value
@@ -680,7 +633,7 @@ class ASMIPlotter:
                 if has_std and stdmap is not None:
                     stdval = row['Std']
                     if pd.notnull(stdval) and not isinstance(stdval, (pd.Series, _np.ndarray)):
-                        stdmap[i, j] = (stdval / 1e6) if (convert_to_mpa and (value_col == 'ElasticModulus' or value_col == 'ElasticModulus_Original')) else stdval
+                        stdmap[i, j] = (stdval / 1e6) if (convert_to_mpa and is_elastic_modulus) else stdval
 
         fig, ax = plt.subplots(figsize=(12, 7))
         norm = mcolors.Normalize(vmin=_np.nanmin(heatmap), vmax=_np.nanmax(heatmap))
@@ -715,17 +668,18 @@ class ASMIPlotter:
         # Determine appropriate title and units based on value column
         if value_col == 'ElasticModulus':
             if convert_to_mpa:
-                title = f"96-Well Plate Young's Modulus Heatmap (MPa){title_suffix}"
+                title = "96-Well Plate Young's Modulus Heatmap (MPa)"
                 unit_label = "MPa"
             else:
-                title = f"96-Well Plate Young's Modulus Heatmap (Pa){title_suffix}"
+                title = "96-Well Plate Young's Modulus Heatmap (Pa)"
                 unit_label = "Pa"
         elif value_col == 'ElasticModulus_Original':
+            # Special handling for original (uncorrected) values
             if convert_to_mpa:
-                title = f"96-Well Plate Young's Modulus Heatmap - Original (MPa){title_suffix}"
+                title = "96-Well Plate Young's Modulus Heatmap (MPa) - Original"
                 unit_label = "MPa"
             else:
-                title = f"96-Well Plate Young's Modulus Heatmap - Original (Pa){title_suffix}"
+                title = "96-Well Plate Young's Modulus Heatmap (Pa) - Original"
                 unit_label = "Pa"
         elif value_col == 'SpringConstant_k':
             title = "96-Well Plate Spring Constant Heatmap (N/mm)"
@@ -736,6 +690,10 @@ class ASMIPlotter:
         else:
             title = f"96-Well Plate {value_col} Heatmap"
             unit_label = "units"
+        
+        # Add title suffix if provided
+        if title_suffix:
+            title = title + title_suffix
         
         ax.set_title(title, fontsize=20)
 
@@ -749,6 +707,204 @@ class ASMIPlotter:
         if save_path:
             plt.savefig(save_path, dpi=300)
             print(f"💾 Saved heatmap to {save_path}")
+            
+            # Save heatmap data to CSV
+            csv_path = save_path.replace('.png', '_data.csv')
+            heatmap_data = []
+            for i, row_label in enumerate(ROWS):
+                for j, col_label in enumerate(COLS):
+                    well = f"{row_label}{col_label}"
+                    value = heatmap[i, j]
+                    row_data = {
+                        'Well': well,
+                        'Row': row_label,
+                        'Column': col_label,
+                        value_col: value if not _np.isnan(value) else ''
+                    }
+                    if has_r2 and r2map is not None:
+                        r2_val = r2map[i, j]
+                        row_data['R2'] = r2_val if not _np.isnan(r2_val) else ''
+                    if has_std and stdmap is not None:
+                        std_val = stdmap[i, j]
+                        row_data['Std'] = std_val if not _np.isnan(std_val) else ''
+                    heatmap_data.append(row_data)
+            
+            # Write to CSV
+            heatmap_df = pd.DataFrame(heatmap_data)
+            heatmap_df.to_csv(csv_path, index=False)
+            print(f"💾 Saved heatmap data to {csv_path}")
+            
+            plt.close()
+        else:
+            plt.show()
+
+    def plot_correction_comparison(self, summary_csv: str, save_path: Optional[str] = None, convert_to_mpa: bool = True):
+        """Plot comparison of elastic modulus before and after system correction.
+        
+        Shows scatter plot, distributions, and statistics to assess if correction
+        improves consistency (reduces variance) of elastic modulus values.
+        
+        Args:
+            summary_csv: Path to summary CSV with ElasticModulus and ElasticModulus_Original columns
+            save_path: Path to save the plot (if None, displays plot)
+            convert_to_mpa: Convert Pa to MPa for display (default: True)
+        """
+        import pandas as pd
+        
+        if not os.path.exists(summary_csv):
+            print(f"❌ CSV file not found: {summary_csv}")
+            return
+        
+        df = pd.read_csv(summary_csv)
+        
+        # Check if we have both original and corrected values
+        if 'ElasticModulus' not in df.columns or 'ElasticModulus_Original' not in df.columns:
+            print(f"❌ CSV must contain both 'ElasticModulus' and 'ElasticModulus_Original' columns")
+            return
+        
+        # Filter out empty/invalid values
+        valid_data = df.dropna(subset=['ElasticModulus', 'ElasticModulus_Original'])
+        valid_data = valid_data[(valid_data['ElasticModulus'] > 0) & (valid_data['ElasticModulus_Original'] > 0)]
+        
+        if len(valid_data) == 0:
+            print(f"❌ No valid data found in CSV")
+            return
+        
+        # Convert to MPa if requested
+        if convert_to_mpa:
+            original = valid_data['ElasticModulus_Original'] / 1e6
+            corrected = valid_data['ElasticModulus'] / 1e6
+            unit = "MPa"
+        else:
+            original = valid_data['ElasticModulus_Original']
+            corrected = valid_data['ElasticModulus']
+            unit = "Pa"
+        
+        # Calculate statistics
+        orig_mean = np.mean(original)
+        orig_std = np.std(original)
+        orig_cv = (orig_std / orig_mean * 100) if orig_mean > 0 else 0
+        
+        corr_mean = np.mean(corrected)
+        corr_std = np.std(corrected)
+        corr_cv = (corr_std / corr_mean * 100) if corr_mean > 0 else 0
+        
+        # Create figure with subplots
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+        
+        # 1. Scatter plot: Original vs Corrected
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.scatter(original, corrected, alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
+        
+        # Add y=x line
+        min_val = min(original.min(), corrected.min())
+        max_val = max(original.max(), corrected.max())
+        ax1.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='y=x (no change)')
+        
+        ax1.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=12)
+        ax1.set_ylabel(f'Corrected Elastic Modulus ({unit})', fontsize=12)
+        ax1.set_title('Original vs Corrected Elastic Modulus', fontsize=14, fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.set_aspect('equal', adjustable='box')
+        
+        # 2. Distribution comparison
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.hist(original, bins=20, alpha=0.6, label=f'Original (μ={orig_mean:.2f}, σ={orig_std:.2f})', color='blue', edgecolor='black')
+        ax2.hist(corrected, bins=20, alpha=0.6, label=f'Corrected (μ={corr_mean:.2f}, σ={corr_std:.2f})', color='red', edgecolor='black')
+        ax2.set_xlabel(f'Elastic Modulus ({unit})', fontsize=12)
+        ax2.set_ylabel('Frequency', fontsize=12)
+        ax2.set_title('Distribution Comparison', fontsize=14, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # 3. Box plot comparison
+        ax3 = fig.add_subplot(gs[0, 2])
+        box_data = [original, corrected]
+        bp = ax3.boxplot(box_data, labels=['Original', 'Corrected'], patch_artist=True)
+        bp['boxes'][0].set_facecolor('lightblue')
+        bp['boxes'][1].set_facecolor('lightcoral')
+        ax3.set_ylabel(f'Elastic Modulus ({unit})', fontsize=12)
+        ax3.set_title('Box Plot Comparison', fontsize=14, fontweight='bold')
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # 4. Difference plot (Corrected - Original)
+        ax4 = fig.add_subplot(gs[1, 0])
+        difference = corrected - original
+        percent_change = (difference / original * 100) if original.mean() > 0 else difference
+        ax4.scatter(original, difference, alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
+        ax4.axhline(y=0, color='r', linestyle='--', linewidth=2)
+        ax4.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=12)
+        ax4.set_ylabel(f'Difference: Corrected - Original ({unit})', fontsize=12)
+        ax4.set_title('Correction Effect', fontsize=14, fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        
+        # 5. Percent change distribution
+        ax5 = fig.add_subplot(gs[1, 1])
+        ax5.hist(percent_change, bins=20, alpha=0.7, color='green', edgecolor='black')
+        ax5.axvline(x=0, color='r', linestyle='--', linewidth=2)
+        ax5.set_xlabel('Percent Change (%)', fontsize=12)
+        ax5.set_ylabel('Frequency', fontsize=12)
+        ax5.set_title('Percent Change Distribution', fontsize=14, fontweight='bold')
+        mean_pct = np.mean(percent_change)
+        ax5.axvline(x=mean_pct, color='orange', linestyle='--', linewidth=2, label=f'Mean: {mean_pct:.1f}%')
+        ax5.legend()
+        ax5.grid(True, alpha=0.3, axis='y')
+        
+        # 6. Statistics summary
+        ax6 = fig.add_subplot(gs[1, 2])
+        ax6.axis('off')
+        
+        # Calculate additional statistics
+        orig_median = np.median(original)
+        corr_median = np.median(corrected)
+        orig_range = original.max() - original.min()
+        corr_range = corrected.max() - corrected.min()
+        
+        # Calculate improvement metrics
+        std_reduction = ((orig_std - corr_std) / orig_std * 100) if orig_std > 0 else 0
+        cv_reduction = ((orig_cv - corr_cv) / orig_cv * 100) if orig_cv > 0 else 0
+        
+        stats_text = f"""
+        STATISTICS SUMMARY
+        {'='*50}
+        
+        ORIGINAL (Before Correction):
+        • Mean: {orig_mean:.2f} {unit}
+        • Median: {orig_median:.2f} {unit}
+        • Std Dev: {orig_std:.2f} {unit}
+        • CV: {orig_cv:.2f}%
+        • Range: {orig_range:.2f} {unit}
+        • Count: {len(original)}
+        
+        CORRECTED (After Correction):
+        • Mean: {corr_mean:.2f} {unit}
+        • Median: {corr_median:.2f} {unit}
+        • Std Dev: {corr_std:.2f} {unit}
+        • CV: {corr_cv:.2f}%
+        • Range: {corr_range:.2f} {unit}
+        • Count: {len(corrected)}
+        
+        IMPROVEMENT:
+        • Std Reduction: {std_reduction:.1f}%
+        • CV Reduction: {cv_reduction:.1f}%
+        • Mean Change: {corr_mean - orig_mean:.2f} {unit} ({mean_pct:.1f}%)
+        """
+        
+        ax6.text(0.1, 0.95, stats_text, transform=ax6.transAxes, fontsize=10,
+                verticalalignment='top', family='monospace',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        # Overall title
+        fig.suptitle('System Correction Analysis: Elastic Modulus Comparison', 
+                    fontsize=16, fontweight='bold', y=0.98)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"💾 Correction comparison plot saved to: {save_path}")
             plt.close()
         else:
             plt.show()

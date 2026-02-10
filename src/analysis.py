@@ -14,6 +14,7 @@ from typing import List, Tuple, Optional, Dict
 from collections import namedtuple
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import curve_fit
 from .version import __version__
 
@@ -40,8 +41,8 @@ class AnalysisResult:
     linear_fit_quality: Optional[float] = None
     linear_intercept: Optional[float] = None
     corrected_depths: Optional[list] = None  # For Hertzian fits with system compliance correction
-    original_elastic_modulus: Optional[float] = None  # Original E before system compliance correction
-    original_fit_quality: Optional[float] = None  # Original R² before system compliance correction
+    original_elastic_modulus: Optional[float] = None  # Original E before system correction
+    original_fit_quality: Optional[float] = None  # Original R² before system correction
 
 
 class IndentationAnalyzer:
@@ -68,6 +69,7 @@ class IndentationAnalyzer:
     def __init__(self, data_dir: str = "."):
         self.data_dir = data_dir
         self.data = None
+        self._spring_constant_map = None  # Cache for well-specific spring constants
     
     # ----------------------------- Data loading -----------------------------
     def load_data(self, filename: str) -> bool:
@@ -224,9 +226,33 @@ class IndentationAnalyzer:
     def calculate_indentation_depth(
         self, z_positions: List[float], first_contact_idx: int, corrected_forces: Optional[List[float]] = None
     ) -> Tuple[List[float], float, List[float]]:
-        zc = z_positions[first_contact_idx]
-        depths = [abs(z - zc) for z in z_positions[first_contact_idx:]]
-        forces = corrected_forces[first_contact_idx:] if corrected_forces is not None else [0.0] * len(depths)
+        """
+        Calculate indentation depths relative to contact point and zero forces at contact.
+        
+        Implements "Force Zeroing" to satisfy Hertzian requirement: F(0) = 0.
+        This eliminates S-shape fitting bias by ensuring force is zero at zero indentation depth.
+        
+        Args:
+            z_positions: List of absolute Z positions
+            first_contact_idx: Index where contact is detected
+            corrected_forces: Baseline-corrected forces (optional)
+            
+        Returns:
+            Tuple of (depths, zc, forces) where:
+            - depths: Relative indentation depths (mm), starting at 0.0 at contact
+            - zc: Absolute Z position of contact point (mm)
+            - forces: Forces zeroed at contact point (N), ensuring F(0) = 0
+        """
+        zc = z_positions[first_contact_idx]  # Absolute contact position
+        depths = [abs(z - zc) for z in z_positions[first_contact_idx:]]  # Relative depths from contact
+        
+        if corrected_forces is not None and len(corrected_forces) > first_contact_idx:
+            # Force Zeroing: Subtract force at contact to ensure F(0) = 0
+            f_at_contact = corrected_forces[first_contact_idx]
+            forces = [f - f_at_contact for f in corrected_forces[first_contact_idx:]]
+        else:
+            forces = [0.0] * len(depths)
+        
         return depths, zc, forces
     
     def calculate_approx_height(self, z_contact: float) -> float:
@@ -234,17 +260,193 @@ class IndentationAnalyzer:
         h = 19.4 - abs(z_contact)
         return max(0.1, min(h, 50.0))
     
-    def correct_depth_for_system_compliance(self, depths: np.ndarray, forces: np.ndarray) -> np.ndarray:
+    def _load_spring_constant_map(self) -> Dict[str, float]:
+        """Load well-specific spring constants from CSV file in src folder.
+        
+        IMPORTANT: The CSV should contain SYSTEM-ONLY spring constants (k_system),
+        measured on rigid surfaces (e.g., aluminum plate or well bottom).
+        Do NOT use total spring constants (k_total = system + sample) measured on samples.
+        
+        Returns:
+            Dictionary mapping well names to spring constant values (N/mm)
+        """
+        if self._spring_constant_map is not None:
+            return self._spring_constant_map
+        
+        # Look for CSV file in src folder
+        csv_path = os.path.join("src", "well_heatmap_spring_constant_data.csv")
+        if not os.path.exists(csv_path):
+            # Fallback to default K_SYSTEM for all wells
+            print(f"⚠️ Spring constant CSV not found at {csv_path}, using default K_SYSTEM = {self.K_SYSTEM} N/mm")
+            self._spring_constant_map = {}
+            return self._spring_constant_map
+        
+        try:
+            df = pd.read_csv(csv_path)
+            
+            # Check which column contains the spring constant
+            # Prefer 'SpringConstant_k_Corrected' if available (system-only, corrected from total)
+            # Otherwise use 'SpringConstant_k' (should be system-only measured on rigid surface)
+            k_col = None
+            for col in ['SpringConstant_k_Corrected', 'SpringConstant_k']:
+                if col in df.columns:
+                    k_col = col
+                    break
+            
+            if k_col is None:
+                print(f"⚠️ No spring constant column found in {csv_path}, using default K_SYSTEM = {self.K_SYSTEM} N/mm")
+                self._spring_constant_map = {}
+                return self._spring_constant_map
+            
+            # Build mapping from well name to spring constant
+            spring_map = {}
+            for _, row in df.iterrows():
+                well = str(row.get('Well', '')).upper()
+                k_val = row.get(k_col)
+                
+                if well and pd.notna(k_val) and k_val != '':
+                    try:
+                        k_float = float(k_val)
+                        # Warn if value seems too low (might be total instead of system-only)
+                        if k_float < 30.0:
+                            print(f"⚠️ Well {well}: k={k_float:.2f} N/mm seems low. Ensure this is system-only (measured on rigid surface), not total (system+sample).")
+                        spring_map[well] = k_float
+                    except (ValueError, TypeError):
+                        continue
+            
+            self._spring_constant_map = spring_map
+            print(f"✅ Loaded {len(spring_map)} well-specific spring constants from {csv_path}")
+            if len(spring_map) > 0:
+                k_values = list(spring_map.values())
+                print(f"📊 Spring constant range: {min(k_values):.2f} - {max(k_values):.2f} N/mm (mean: {np.mean(k_values):.2f} N/mm)")
+            return spring_map
+            
+        except Exception as e:
+            print(f"⚠️ Error loading spring constant CSV: {e}, using default K_SYSTEM = {self.K_SYSTEM} N/mm")
+            self._spring_constant_map = {}
+            return self._spring_constant_map
+    
+    def _get_spring_constant_for_well(self, well: str) -> float:
+        """Get spring constant for a specific well.
+        
+        IMPORTANT: This should return the SYSTEM-ONLY spring constant (k_system),
+        not the total spring constant (k_total = system + sample).
+        
+        Args:
+            well: Well identifier (e.g., 'A1', 'B2')
+            
+        Returns:
+            Spring constant in N/mm (uses well-specific value if available, otherwise default)
+        """
+        spring_map = self._load_spring_constant_map()
+        
+        # Normalize well name (remove _down/_up suffix if present)
+        well_normalized = well.upper()
+        if well_normalized.endswith('_DOWN'):
+            well_normalized = well_normalized[:-5]
+        elif well_normalized.endswith('_UP'):
+            well_normalized = well_normalized[:-3]
+        
+        # Look up in map, fallback to default
+        k_system = spring_map.get(well_normalized, self.K_SYSTEM)
+        
+        if well_normalized in spring_map:
+            return k_system
+        else:
+            # Use default if not found
+            return self.K_SYSTEM
+    
+    def diagnose_correction_issue(self, summary_csv: str) -> Dict:
+        """Diagnose potential issues with system correction that might cause increased scatter.
+        
+        Checks if spring constants in CSV are appropriate for depth correction.
+        
+        Args:
+            summary_csv: Path to summary CSV with elastic modulus data
+            
+        Returns:
+            Dictionary with diagnostic information
+        """
+        import pandas as pd
+        
+        diagnostics = {
+            'csv_found': False,
+            'spring_constants_loaded': False,
+            'k_system_values': [],
+            'k_system_range': None,
+            'k_system_mean': None,
+            'potential_issue': None,
+            'recommendation': None
+        }
+        
+        # Check if spring constant CSV exists
+        csv_path = os.path.join("src", "well_heatmap_spring_constant_data.csv")
+        if os.path.exists(csv_path):
+            diagnostics['csv_found'] = True
+            spring_map = self._load_spring_constant_map()
+            if spring_map:
+                diagnostics['spring_constants_loaded'] = True
+                k_values = list(spring_map.values())
+                diagnostics['k_system_values'] = k_values
+                diagnostics['k_system_range'] = (min(k_values), max(k_values))
+                diagnostics['k_system_mean'] = np.mean(k_values)
+                
+                # Check for potential issues
+                if min(k_values) < 30.0:
+                    diagnostics['potential_issue'] = "Spring constants are very low (<30 N/mm). These might be total spring constants (system+sample) rather than system-only constants."
+                    diagnostics['recommendation'] = "Ensure CSV contains system-only spring constants measured on rigid surfaces (e.g., aluminum plate or well bottom), not total spring constants measured on samples."
+                elif max(k_values) - min(k_values) > 20.0:
+                    diagnostics['potential_issue'] = f"Large variation in spring constants across wells (range: {max(k_values)-min(k_values):.2f} N/mm). This variation might be causing increased scatter."
+                    diagnostics['recommendation'] = "Verify that spring constants are measured consistently. Large variations might indicate measurement errors or actual system compliance variations."
+        
+        # Check summary CSV for scatter metrics
+        if os.path.exists(summary_csv):
+            try:
+                df = pd.read_csv(summary_csv)
+                if 'ElasticModulus' in df.columns and 'ElasticModulus_Original' in df.columns:
+                    valid = df.dropna(subset=['ElasticModulus', 'ElasticModulus_Original'])
+                    valid = valid[(valid['ElasticModulus'] > 0) & (valid['ElasticModulus_Original'] > 0)]
+                    
+                    if len(valid) > 0:
+                        orig = valid['ElasticModulus_Original'] / 1e6  # Convert to MPa
+                        corr = valid['ElasticModulus'] / 1e6
+                        
+                        orig_cv = (np.std(orig) / np.mean(orig) * 100) if np.mean(orig) > 0 else 0
+                        corr_cv = (np.std(corr) / np.mean(corr) * 100) if np.mean(corr) > 0 else 0
+                        
+                        diagnostics['original_cv'] = orig_cv
+                        diagnostics['corrected_cv'] = corr_cv
+                        diagnostics['cv_change'] = corr_cv - orig_cv
+                        
+                        if corr_cv > orig_cv:
+                            diagnostics['scatter_increased'] = True
+                            diagnostics['recommendation'] = (diagnostics.get('recommendation', '') + 
+                                f"\n⚠️ Scatter increased after correction (CV: {orig_cv:.2f}% → {corr_cv:.2f}%). "
+                                "This suggests the correction might be incorrect. Check if spring constants in CSV are system-only (measured on rigid surfaces) or total (measured on samples).")
+            except Exception as e:
+                diagnostics['error'] = str(e)
+        
+        return diagnostics
+    
+    def correct_depth_for_system_compliance(self, depths: np.ndarray, forces: np.ndarray, well: Optional[str] = None) -> np.ndarray:
         """Correct measured depths for system compliance: d_true = d_measure - force / k_system
+        
+        Uses well-specific spring constant from CSV if available, otherwise uses default K_SYSTEM.
         
         Args:
             depths: Measured indentation depths (mm)
             forces: Corresponding forces (N)
+            well: Well identifier (e.g., 'A1', 'B2') for well-specific correction
             
         Returns:
             Corrected depths (mm)
         """
-        return depths - forces / self.K_SYSTEM
+        if well is not None:
+            k_system = self._get_spring_constant_for_well(well)
+        else:
+            k_system = self.K_SYSTEM
+        
+        return depths - forces / k_system
 
     # ---------------------- Material property detection ---------------------
     def detect_force_limit_reached(self, filename: str) -> Tuple[bool, float]:
@@ -306,6 +508,21 @@ class IndentationAnalyzer:
         return E
     
     def fit_hertz_model(self, depths: np.ndarray, forces: np.ndarray, bounds=None, raise_on_fail=False) -> FitResult:
+        """
+        Fit Hertzian contact model: F = A * (depth - d0)^1.5
+        
+        Optimized bounds for d0 parameter to eliminate S-shape fitting bias.
+        With force zeroing, d0 should be close to 0, allowing fine-tuning of contact position.
+        
+        Args:
+            depths: Indentation depths (mm), relative to contact point
+            forces: Forces (N), zeroed at contact point (F(0) = 0)
+            bounds: Optional custom bounds [(lb_A, lb_d0), (ub_A, ub_d0)]
+            raise_on_fail: Whether to raise exception on fitting failure
+            
+        Returns:
+            FitResult with fit parameters [A, d0] and covariance matrix
+        """
         def hertz(depth, A, d0):
             return A * np.power(np.maximum(depth - d0, 0), 1.5)
 
@@ -313,11 +530,17 @@ class IndentationAnalyzer:
             raise ValueError("Not enough data points for fitting.")
         if np.any(np.isnan(depths)) or np.any(np.isnan(forces)):
             raise ValueError("Input data contains NaNs.")
+        
+        # Optimized bounds: A > 0, d0 in [-0.5, 0.5] mm for fine-tuning contact position
+        # Initial guess: A = 2, d0 = 0.0 (since forces are zeroed at contact)
+        default_bounds = ([0.0, -0.5], [np.inf, 0.5])
+        default_p0 = [2.0, 0.0]
+        
         try:
             if bounds is not None:
-                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03], bounds=bounds)
+                p, cov = curve_fit(hertz, depths, forces, p0=default_p0, bounds=bounds)
             else:
-                p, cov = curve_fit(hertz, depths, forces, p0=[2, 0.03])
+                p, cov = curve_fit(hertz, depths, forces, p0=default_p0, bounds=default_bounds)
             return FitResult(p, cov, hertz)
         except Exception as e:
             print(f"❌ Curve fitting failed: {e}")
@@ -380,6 +603,7 @@ class IndentationAnalyzer:
         fit_method: str = "hertzian",  # "hertzian" or "linear"
         apply_system_correction: bool = True,
         retrospective_threshold: Optional[float] = None,
+        max_depth: float = 0.5,  # Maximum depth (mm) to use for analysis (default: 0.5 mm)
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
@@ -466,13 +690,17 @@ class IndentationAnalyzer:
         depths, zc, forces_from_contact = self.calculate_indentation_depth(z_positions, first_idx, corrected_forces)
 
         # Filter to analysis range
+        # Use max_depth parameter (default: 0.5 mm)
+        depth_limit = max_depth
+        print(f"📏 Using max_depth: {max_depth:.3f} mm for analysis")
+        
         d_in, f_in = [], []
         for d, f in zip(depths, forces_from_contact):
-            if 0 <= d <= self.INDENTATION_DEPTH_THRESHOLD:
+            if 0 <= d <= depth_limit:
                 d_in.append(d)
                 f_in.append(f)
         if len(d_in) < 5:
-            print("❌ Not enough data points in analysis range")
+            print(f"❌ Not enough data points in analysis range (0 to {depth_limit:.3f} mm)")
             return None
         
         # Remove last point if exceeds force limit
@@ -520,15 +748,16 @@ class IndentationAnalyzer:
             
             if apply_system_correction:
                 print("🔬 Using Hertzian fitting with system compliance correction")
-                # First fit original data (without correction) to get original E
-                lb = [0.0, -0.1]
-                ub = [np.inf, 2.0]
+                # First, fit original (uncorrected) data to get original E
+                # Use optimized bounds: d0 in [-0.5, 0.5] mm for fine-tuning contact position
+                lb = [0.0, -0.5]
+                ub = [np.inf, 0.5]
                 fit_original = self.fit_hertz_model(d_arr, f_arr, bounds=(lb, ub))
                 if fit_original.params is not None:
                     A_original = float(fit_original.params[0])
                     d0_original = float(fit_original.params[1])
                     original_E = round(self.adjust_E(self.find_E(A_original, poisson_ratio)))
-                    # Calculate R² for original fit
+                    # Calculate original R²
                     mask_orig = d_arr > d0_original
                     if np.sum(mask_orig) > 5:
                         vd_orig = d_arr[mask_orig]
@@ -539,16 +768,19 @@ class IndentationAnalyzer:
                         original_r2 = 1 - (ss_res_orig / ss_tot_orig) if ss_tot_orig > 0 else 0
                     else:
                         original_r2 = 0
+                    print(f"📊 Original (uncorrected) E = {original_E} Pa, R² = {original_r2:.3f}")
                 
                 # Apply system compliance correction: d_true = d_measure - force / k_system
-                d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr)
-                print(f"🔧 Applied system compliance correction (k_system = {self.K_SYSTEM} N/mm)")
+                k_system_used = self._get_spring_constant_for_well(well)
+                d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr, well=well)
+                print(f"🔧 Applied system compliance correction (k_system = {k_system_used:.2f} N/mm for well {well})")
             else:
                 print("🔬 Using Hertzian fitting (no system compliance correction)")
                 d_corrected = d_arr
             
-            lb = [0.0, -0.1]
-            ub = [np.inf, 2.0]
+            # Use optimized bounds: d0 in [-0.5, 0.5] mm for fine-tuning contact position
+            lb = [0.0, -0.5]
+            ub = [np.inf, 0.5]
             fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
             if fit.params is None:
                 print("❌ Hertzian fitting failed")
@@ -602,8 +834,8 @@ class IndentationAnalyzer:
             linear_fit_quality=linear_r2,
             linear_intercept=linear_intercept,
             corrected_depths=corrected_depths if fit_method.lower() != "linear" else None,
-            original_elastic_modulus=original_E,
-            original_fit_quality=float(round(original_r2, 3)) if original_r2 is not None else None,
+            original_elastic_modulus=original_E if apply_system_correction and fit_method.lower() != "linear" else None,
+            original_fit_quality=float(round(original_r2, 3)) if apply_system_correction and fit_method.lower() != "linear" and original_r2 is not None else None,
         )
 
         # Optional per-direction subset plots when direction info exists
@@ -626,7 +858,8 @@ class IndentationAnalyzer:
                     order = np.argsort(depths_sub)
                     d_sorted = np.array([depths_sub[i] for i in order])
                     f_sorted = np.array([f_sub[i] for i in order])
-                    mask = (d_sorted >= 0) & (d_sorted <= self.INDENTATION_DEPTH_THRESHOLD)
+                    # Use the same depth_limit as the main analysis
+                    mask = (d_sorted >= 0) & (d_sorted <= depth_limit)
                     d_use = d_sorted[mask]
                     f_use = f_sorted[mask]
                     if len(d_use) < 5:

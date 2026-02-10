@@ -17,6 +17,7 @@ import os
 import csv
 import time
 from datetime import datetime
+from typing import Optional
 
 from numpy import False_
 
@@ -125,7 +126,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None):
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None, max_depth: float = 0.5):
     """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
@@ -148,6 +149,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             fit_method=fit_method,
             apply_system_correction=apply_system_correction,
             retrospective_threshold=retrospective_threshold,
+            max_depth=max_depth,
         )
     except TypeError:
         # Fall back if analyze_well does not accept contact_method
@@ -158,6 +160,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             fit_method=fit_method,
             apply_system_correction=apply_system_correction,
             retrospective_threshold=retrospective_threshold,
+            max_depth=max_depth,
         )
 
     if not result:
@@ -206,6 +209,7 @@ def run_measure_analyze_plot(
     retrospective_threshold: float | None = None,
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
+    max_depth: float | None = None,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
@@ -286,17 +290,17 @@ def run_measure_analyze_plot(
                 well_down = "indentation_down"
                 well_up = "indentation_up"
             if down_csv:
-                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
                 if r_down:
                     per_well_results.append(r_down)
             if up_csv:
-                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
                 if r_up:
                     per_well_results.append(r_up)
         else:
             # No return pass: analyze the original file with plain well ID (no _down suffix)
             plain_well = well.upper() if well is not None else "indentation"
-            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold)
+            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
             if r_single:
                 per_well_results.append(r_single)
 
@@ -367,6 +371,88 @@ def write_summary_csv(run_folder_name: str, results: list):
     return out_csv
 
 
+def correct_spring_constant_csv(csv_path: str, k_system: float = 64.27, output_path: Optional[str] = None):
+    """
+    Read spring constant CSV and apply system compliance correction to each well.
+    
+    For springs in series: 1/k_total = 1/k_system + 1/k_sample
+    Therefore: k_sample = 1 / (1/k_total - 1/k_system)
+    
+    Args:
+        csv_path: Path to input CSV file with spring constant data
+        k_system: System spring constant (N/mm), default 64.27
+        output_path: Path to save corrected CSV (if None, appends '_corrected' to input path)
+        
+    Returns:
+        Path to the corrected CSV file
+    """
+    import pandas as pd
+    
+    if not os.path.exists(csv_path):
+        print(f"❌ CSV file not found: {csv_path}")
+        return None
+    
+    # Read the CSV
+    df = pd.read_csv(csv_path)
+    
+    if 'SpringConstant_k' not in df.columns:
+        print(f"❌ Column 'SpringConstant_k' not found in CSV. Available columns: {df.columns.tolist()}")
+        return None
+    
+    # Create a copy for corrected values
+    df_corrected = df.copy()
+    
+    # Apply correction to each well
+    corrected_values = []
+    for idx, row in df.iterrows():
+        k_measured = row['SpringConstant_k']
+        
+        # Skip empty or invalid values
+        if pd.isna(k_measured) or k_measured == '' or k_measured == 0:
+            corrected_values.append('')
+            continue
+        
+        try:
+            k_measured = float(k_measured)
+            # Correction formula: k_sample = 1 / (1/k_total - 1/k_system)
+            if abs(1/k_measured - 1/k_system) < 1e-10:
+                # Avoid division by zero (k_measured ≈ k_system)
+                print(f"⚠️ Well {row.get('Well', idx)}: k_measured ({k_measured:.3f}) too close to k_system ({k_system:.3f}), skipping correction")
+                corrected_values.append(k_measured)
+            else:
+                k_corrected = 1 / (1/k_measured - 1/k_system)
+                corrected_values.append(k_corrected)
+        except (ValueError, ZeroDivisionError) as e:
+            print(f"⚠️ Error correcting well {row.get('Well', idx)}: {e}")
+            corrected_values.append('')
+    
+    # Add corrected column
+    df_corrected['SpringConstant_k_Corrected'] = corrected_values
+    
+    # Determine output path
+    if output_path is None:
+        base, ext = os.path.splitext(csv_path)
+        output_path = f"{base}_corrected{ext}"
+    
+    # Save corrected CSV
+    df_corrected.to_csv(output_path, index=False)
+    print(f"💾 Corrected spring constant data saved to: {output_path}")
+    print(f"📊 Applied system compliance correction (k_system = {k_system} N/mm)")
+    
+    # Print statistics
+    valid_corrected = [k for k in corrected_values if k != '' and not pd.isna(k)]
+    if valid_corrected:
+        import numpy as np
+        print(f"📊 Statistics for corrected spring constants:")
+        print(f"   Count: {len(valid_corrected)}")
+        print(f"   Mean: {np.mean(valid_corrected):.3f} N/mm")
+        print(f"   Std: {np.std(valid_corrected):.3f} N/mm")
+        print(f"   Min: {np.min(valid_corrected):.3f} N/mm")
+        print(f"   Max: {np.max(valid_corrected):.3f} N/mm")
+    
+    return output_path
+
+
 def print_linear_statistics(results: list, direction: str = ""):
     """Print statistics for linear fit parameters (k and b)."""
     linear_results = [r for r in results if r and getattr(r, 'spring_constant', None) is not None]
@@ -419,6 +505,7 @@ def main(
     retrospective_threshold: float | None = None,
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
+    max_depth: float = 0.5,  # Maximum depth (mm) to use for analysis (default: 0.5 mm)
 ):
     """Parameter-based entry point.
     
@@ -438,6 +525,7 @@ def main(
         move_to_pickup: Move to pickup position after measurements
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
         fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
+        max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
     """
     
     if show_version:
@@ -511,6 +599,7 @@ def main(
                     retrospective_threshold=retrospective_threshold,
                     lock_xy_single_spot=lock_xy_single_spot,
                     lock_xy_position=resolved_locked_xy,
+                    max_depth=max_depth,
                 )
                 if r:
                     if isinstance(r, list):
@@ -573,6 +662,7 @@ def main(
                         fit_method=fit_method,
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
+                        max_depth=max_depth,
                     )
                 elif well_name.lower().endswith("_up"):
                     r = analyze_file(
@@ -582,6 +672,7 @@ def main(
                         fit_method=fit_method,
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
+                        max_depth=max_depth,
                     )
                 else:
                     r = analyze_file(
@@ -591,6 +682,7 @@ def main(
                         fit_method=fit_method,
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
+                        max_depth=max_depth,
                     )
                 if r:
                     results.append(r)
@@ -674,6 +766,12 @@ def main(
                         # Generate two separate heatmaps
                         plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_down_corrected.png"), title_suffix=" (System Corrected)")
                         plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_down_original.png"), title_suffix=" (Original)")
+                        # Generate correction comparison plot
+                        plotter.plot_correction_comparison(
+                            down_csv, 
+                            save_path=os.path.join(plots_root, "correction_comparison_down.png"),
+                            convert_to_mpa=True
+                        )
                     else:
                         plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
             if up_results:
@@ -693,6 +791,12 @@ def main(
                         # Generate two separate heatmaps
                         plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_up_corrected.png"), title_suffix=" (System Corrected)")
                         plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_up_original.png"), title_suffix=" (Original)")
+                        # Generate correction comparison plot
+                        plotter.plot_correction_comparison(
+                            up_csv, 
+                            save_path=os.path.join(plots_root, "correction_comparison_up.png"),
+                            convert_to_mpa=True
+                        )
                     else:
                         plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
         else:
@@ -715,6 +819,26 @@ def main(
                     plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_original.png"), title_suffix=" (Original)")
                 else:
                     plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
+                
+                # Generate correction comparison plot if system correction was applied
+                if has_system_correction:
+                    plotter.plot_correction_comparison(
+                        summary_csv, 
+                        save_path=os.path.join(plots_root, "correction_comparison.png"),
+                        convert_to_mpa=True
+                    )
+                    # Run diagnostic to check for correction issues
+                    try:
+                        from src.analysis import IndentationAnalyzer
+                        tmp_analyzer = IndentationAnalyzer()
+                        diag = tmp_analyzer.diagnose_correction_issue(summary_csv)
+                        if diag.get('scatter_increased'):
+                            print(f"\n⚠️ WARNING: Scatter increased after correction!")
+                            print(f"   Original CV: {diag.get('original_cv', 0):.2f}%")
+                            print(f"   Corrected CV: {diag.get('corrected_cv', 0):.2f}%")
+                            print(f"   {diag.get('recommendation', 'Check spring constant values in CSV.')}")
+                    except Exception as e:
+                        print(f"⚠️ Could not run correction diagnostics: {e}")
 
     # Also generate raw data plots for the run folder
     if run_folder_name:
@@ -743,6 +867,7 @@ def run_main_at_intervals(
     pickup_position: tuple[float, float, float] = (0.0, 140.0, 0.0),
     home_before_measure: bool = True,
     fit_method: str = "hertzian",
+    max_depth: float = 0.5,
 ):
     """Run main measurement cycles at regular intervals with enhanced error handling and timing.
     
@@ -762,6 +887,7 @@ def run_main_at_intervals(
         move_to_pickup: Move to pickup position after each cycle
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
         fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
+        max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
     """
     print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
     print(f"📍 Wells: {wells_to_test}")
@@ -809,6 +935,7 @@ def run_main_at_intervals(
                     move_to_pickup=move_to_pickup,
                     pickup_position=pickup_position,
                     fit_method=fit_method,
+                    max_depth=max_depth,
                 )
                 
                 cycle_duration = time.time() - cycle_actual_start
@@ -913,25 +1040,30 @@ if __name__ == "__main__":
     #      pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
     #      )
     
-    # Test indentation (uncomment them if do_measure=True)
-    # cnc = CNCController()
-    #force_sensor = ForceSensor()
-    
-    
     # Test all wells
-    wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
+    # wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
     
     # Test wells
-    # wells_to_test = ['E5', 'E6', 'E7']
+    wells_to_test = ['E5', 'E6', 'E7']
     # Choose fitting method:
     # fit_method="hertzian" - Calculate elastic modulus using Hertzian contact mechanics
     # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
     
+    # Hardware initialization: Set do_measure=True to initialize hardware, False to analyze existing data only
+    # The main() function will automatically initialize hardware if do_measure=True and cnc/force_sensor are None
+    DO_MEASURE = False # Set to False to analyze existing data without hardware
+    
+    cnc = None
+    force_sensor = None
+    if DO_MEASURE:
+        cnc = CNCController()
+        force_sensor = ForceSensor()
+    
     # Test the system compliance k_system
     # main(
-    #     cnc=cnc, # None if do_measure=False
-    #     force_sensor=force_sensor, # None if do_measure=False
-    #     do_measure=True, 
+    #     cnc=cnc,
+    #     force_sensor=force_sensor,
+    #     do_measure=DO_MEASURE, 
     #     home_before_measure=True,
     #     wells_to_test=wells_to_test,
     #     contact_method="retrospective",
@@ -942,18 +1074,19 @@ if __name__ == "__main__":
     #     step_size=0.01,
     #     z_target=-90.0,
     #     force_limit=20.0,
-    #     well_top_z=-80.0, #-80.0 for well bottom, -84.0 for alumnium plate
-    #     lock_xy_single_spot=True,
+    #     well_top_z=-80.0, #-82.0 for well bottom, -84.0 for alumnium plate
+    #     lock_xy_single_spot=False,
     #     lock_xy_position=(-120, -40.0),
-    #     existing_run_folder=None,
+    #     existing_run_folder="run_734_20260209_164304",
     #     existing_measured_with_return=False
     #      )
     
+    
     # Test the materials
     main(
-        cnc=None, # None if do_measure=False
-        force_sensor=None, # None if do_measure=False
-        do_measure=False, 
+        cnc=cnc,
+        force_sensor=force_sensor,
+        do_measure=DO_MEASURE, 
         home_before_measure=True,
         wells_to_test=wells_to_test,
         contact_method="retrospective",
@@ -962,10 +1095,11 @@ if __name__ == "__main__":
         measure_with_return=False,
         move_to_pickup=False, # if True, move to pickup position after measurements
          step_size=0.01,
-         z_target=-80.0,
+         z_target=-90.0,
          force_limit=10.0,
-         well_top_z=-70.0,
-        existing_run_folder="run_732_20251030_122001",
+         well_top_z=-73.0,
+        existing_run_folder="run_733_20260209_145343",
         existing_measured_with_return=False,
         apply_system_correction=True,
+        max_depth=0.25, # Maximum depth (mm) to use for analysis. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
          )

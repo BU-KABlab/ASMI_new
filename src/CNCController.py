@@ -9,6 +9,7 @@ License: MIT
 """
 
 import serial
+import serial.tools.list_ports
 import time
 import csv
 import threading
@@ -19,7 +20,7 @@ from .version import __version__
 
 # === CNC CONFIGURATION ===
 BAUD_RATE = 115200
-GRBL_PORT = '/dev/cu.usbserial-1130'
+GRBL_PORT = '/dev/cu.usbserial-1130' # can be automatically detected
 
 # === WELL PLATE GEOMETRY ===
 A1_X = -149.0
@@ -30,11 +31,86 @@ ROWS = [str(i) for i in range(1, 13)]
 COLS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 FEEDRATE = 1000
 
+
+def list_available_ports():
+    """List all available serial ports."""
+    ports = serial.tools.list_ports.comports()
+    if not ports:
+        return []
+    return [port.device for port in ports]
+
+
+def find_grbl_port(preferred_port=None):
+    """Find a GRBL-compatible serial port.
+    
+    Args:
+        preferred_port: Preferred port path (e.g., '/dev/cu.usbserial-1130')
+        
+    Returns:
+        Port path if found, None otherwise
+    """
+    available_ports = list_available_ports()
+    
+    # If preferred port is specified and available, use it
+    if preferred_port and preferred_port in available_ports:
+        return preferred_port
+    
+    # Otherwise, look for common GRBL port patterns
+    # On macOS, GRBL devices often appear as cu.usbserial-* or cu.usbmodem*
+    for port in available_ports:
+        if 'usbserial' in port.lower() or 'usbmodem' in port.lower():
+            return port
+    
+    # If no pattern match, return first available port (if any)
+    if available_ports:
+        return available_ports[0]
+    
+    return None
+
+
 class CNCController:
-    def __init__(self, port=GRBL_PORT, baudrate=BAUD_RATE):
+    def __init__(self, port=GRBL_PORT, baudrate=BAUD_RATE, auto_detect_port=True):
+        """
+        Initialize CNC Controller.
+        
+        Args:
+            port: Serial port path (default: GRBL_PORT)
+            baudrate: Serial baud rate (default: BAUD_RATE)
+            auto_detect_port: If True, automatically detect port if specified port is not available
+        """
         self.port = port
         self.baudrate = baudrate
-        self.ser = serial.Serial(self.port, self.baudrate)
+        self.ser = None
+        
+        try:
+            # Try to open the specified port
+            self.ser = serial.Serial(self.port, self.baudrate)
+            print(f"✅ Connected to CNC on port: {self.port}")
+        except (serial.SerialException, FileNotFoundError) as e:
+            if auto_detect_port:
+                print(f"⚠️ Could not open port {self.port}: {e}")
+                print("🔍 Attempting to auto-detect serial port...")
+                
+                detected_port = find_grbl_port(self.port)
+                if detected_port:
+                    print(f"📍 Found port: {detected_port}")
+                    try:
+                        self.port = detected_port
+                        self.ser = serial.Serial(self.port, self.baudrate)
+                        print(f"✅ Connected to CNC on auto-detected port: {self.port}")
+                    except serial.SerialException as e2:
+                        print(f"❌ Could not open auto-detected port {detected_port}: {e2}")
+                        self._print_port_help()
+                        raise
+                else:
+                    print("❌ No serial ports found.")
+                    self._print_port_help()
+                    raise serial.SerialException(f"Could not find any available serial ports. Original error: {e}")
+            else:
+                print(f"❌ Could not open port {self.port}: {e}")
+                self._print_port_help()
+                raise
+        
         # Track work coordinate offset for WPos computation when GRBL does not report WPos/WCO
         self.work_offset = (0.0, 0.0, 0.0)
         self.ser.write(b"\r\n\r\n")
@@ -42,6 +118,21 @@ class CNCController:
         self.send_gcode("$X")  # Unlock
         print("🔧 CNC Controller initialized")
         # self.sync_position()
+    
+    def _print_port_help(self):
+        """Print helpful information about available ports."""
+        available_ports = list_available_ports()
+        if available_ports:
+            print("\n📋 Available serial ports:")
+            for p in available_ports:
+                print(f"   - {p}")
+            print("\n💡 Tip: Update GRBL_PORT in src/CNCController.py or pass port parameter to CNCController()")
+        else:
+            print("\n❌ No serial ports detected. Please check:")
+            print("   1. USB cable is connected")
+            print("   2. CNC machine is powered on")
+            print("   3. Drivers are installed")
+            print("   4. No other program is using the port")
 
 
     def close(self):
