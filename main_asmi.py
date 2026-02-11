@@ -15,6 +15,7 @@ License: MIT
 
 import os
 import csv
+from pickle import FALSE
 import time
 from datetime import datetime
 from typing import Optional
@@ -1098,8 +1099,8 @@ if __name__ == "__main__":
          z_target=-90.0,
          force_limit=10.0,
          well_top_z=-73.0,
-        existing_run_folder="run_733_20260209_145343",
+        existing_run_folder="run_737_20260209_204208",
         existing_measured_with_return=False,
-        apply_system_correction=True,
+        apply_system_correction=False,
         max_depth=0.25, # Maximum depth (mm) to use for analysis. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
          )
