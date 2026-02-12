@@ -92,6 +92,13 @@ main(
 | `existing_run_folder` | str | `None` | Folder name for existing data (e.g., `"run_732_20251030_122001"`) |
 | `existing_measured_with_return` | bool | `True` | Whether existing data has return measurements |
 | `generate_heatmap` | bool | `True` | Generate 96-well plate heatmaps after analysis |
+| `max_depth` | float | `0.5` | Maximum indentation depth (mm) used for fitting |
+| `min_depth` | float | `0.25` | **Hertzian only:** Minimum depth (mm); 0.25 = legacy 0.25–0.5 mm range. Linear always uses 0–max_depth |
+| `apply_force_correction` | bool | `False` | **Hertzian only:** Apply geometry-based force correction (KABlab legacy) before fit |
+| `iterative_d0_refinement` | bool | `False` | **Hertzian only:** Iterative d0 refinement until \|d0\| < 0.01 mm (KABlab legacy) |
+| `well_bottom_z` | float | `-85.0` | Well bottom Z (mm); sample height = \|contact_z - well_bottom_z\| |
+| `poisson_ratio` | float | `None` | Sample Poisson's ratio; `None` = auto-detect from filename (e.g., 0.5 for hydrogel, 0.3 for glassy) |
+| `marker_scale` | float | `1.0` | Scale factor for plot marker sizes; use >1 when resizing in PowerPoint |
 
 ### Advanced Parameters
 
@@ -175,7 +182,26 @@ main(
 )
 ```
 
-### Example 4: Measure System Compliance (Linear Fit)
+### Example 4: Hertzian with KABlab Legacy Options (PDMS, etc.)
+
+```python
+main(
+    do_measure=False,
+    existing_run_folder="run_737_20260209_204208",
+    wells_to_test=["E5", "E6", "E7"],
+    contact_method="retrospective",
+    fit_method="hertzian",
+    apply_system_correction=False,
+    min_depth=0.25,
+    max_depth=0.5,
+    apply_force_correction=True,
+    iterative_d0_refinement=True,
+    well_bottom_z=-85.0,
+    poisson_ratio=0.5,
+)
+```
+
+### Example 5: Measure System Compliance (Linear Fit)
 
 ```python
 from src.CNCController import CNCController
@@ -197,6 +223,16 @@ main(
     well_top_z=-80.0,
     lock_xy_single_spot=True,
     lock_xy_position=(-120, -40.0),
+)
+```
+
+### Example 6: Plot Customization for PowerPoint
+
+```python
+main(
+    do_measure=False,
+    existing_run_folder="run_737_...",
+    marker_scale=1.5,  # Larger markers/lines for resizing in PPT
 )
 ```
 
@@ -228,7 +264,14 @@ results/
 
 - **`"hertzian"`**: Calculates elastic modulus using Hertzian contact mechanics
   - With `apply_system_correction=True`: Generates both original and corrected fits/heatmaps
-- **`"linear"`**: Calculates spring constant using linear fit (F = k * d)
+  - `min_depth`, `max_depth`: Control depth range for fit (default 0.25–0.5 mm)
+  - `apply_force_correction`: Geometry correction for finite-height samples (KABlab legacy)
+  - `iterative_d0_refinement`: Iterative d0 refinement until convergence (KABlab legacy)
+- **`"linear"`**: Calculates spring constant using linear fit (F = k * d); always uses 0–max_depth
+
+## Sample Height
+
+Sample height is computed as **\|contact_z - well_bottom_z\|**. Set `well_bottom_z` (default -85 mm) to match your plate geometry. Used for geometry force correction lookup and summary output.
 
 ## Project Structure
 

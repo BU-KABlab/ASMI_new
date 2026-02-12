@@ -43,6 +43,8 @@ class AnalysisResult:
     corrected_depths: Optional[list] = None  # For Hertzian fits with system compliance correction
     original_elastic_modulus: Optional[float] = None  # Original E before system correction
     original_fit_quality: Optional[float] = None  # Original R² before system correction
+    depth_full: Optional[list] = None  # For plotting: 0 to max_depth (when min_depth > 0)
+    forces_full: Optional[list] = None  # For plotting: forces corresponding to depth_full
 
 
 class IndentationAnalyzer:
@@ -255,9 +257,9 @@ class IndentationAnalyzer:
         
         return depths, zc, forces
     
-    def calculate_approx_height(self, z_contact: float) -> float:
-        # Sample Height ≈ 10.9 + 8.5 - |z_contact| = 19.4 - |z_contact|
-        h = 19.4 - abs(z_contact)
+    def calculate_approx_height(self, z_contact: float, well_bottom_z: float = -85.0) -> float:
+        """Sample height = |z_contact - well_bottom_z| (distance from well bottom to contact/sample top)."""
+        h = abs(z_contact - well_bottom_z)
         return max(0.1, min(h, 50.0))
     
     def _load_spring_constant_map(self) -> Dict[str, float]:
@@ -448,6 +450,43 @@ class IndentationAnalyzer:
         
         return depths - forces / k_system
 
+    def _get_force_correction_params(self, p_ratio: float, approx_height: float) -> Tuple[float, float]:
+        """Return (b, c) for geometry correction: F_corrected = F_raw / (c * d^b).
+        Based on simulation data for non-ideal sample shapes (finite height, well geometry).
+        """
+        # p_ratio bands: <0.325, [0.325,0.375), [0.375,0.425), [0.425,0.475), >=0.475
+        # height bands: >=9.5, [8.5,9.5), [7.5,8.5), [6.5,7.5), [5.5,6.5), [4.5,5.5), [3.5,4.5), else
+        def h_idx(h: float) -> int:
+            if h >= 9.5: return 0
+            if h >= 8.5: return 1
+            if h >= 7.5: return 2
+            if h >= 6.5: return 3
+            if h >= 5.5: return 4
+            if h >= 4.5: return 5
+            if h >= 3.5: return 6
+            return 7 # h < 3.5
+
+        # Table: [p_band][h_idx] = (b, c)
+        if p_ratio < 0.325:
+            tbl = [(0.13, 1.24), (0.131, 1.24), (0.133, 1.25), (0.132, 1.24), (0.132, 1.24), (0.139, 1.27), (0.149, 1.3), (0.162, 1.38)] #tbl means table values, each tuple is (b, c) corresponding to the height and p_ratio band
+        elif p_ratio < 0.375:
+            tbl = [(0.132, 1.25), (0.132, 1.25), (0.134, 1.25), (0.136, 1.26), (0.126, 1.25), (0.133, 1.27), (0.144, 1.32), (0.169, 1.42)]
+        elif p_ratio < 0.425:
+            tbl = [(0.181, 1.33), (0.182, 1.34), (0.183, 1.34), (0.183, 1.34), (0.194, 1.38), (0.198, 1.4), (0.203, 1.44), (0.176, 1.46)]
+        elif p_ratio < 0.475:
+            tbl = [(0.156, 1.35), (0.152, 1.34), (0.156, 1.35), (0.161, 1.37), (0.153, 1.37), (0.166, 1.42), (0.179, 1.47), (0.205, 1.59)]
+        else: # p_ratio >= 0.475
+            tbl = [(0.203, 1.58), (0.207, 1.6), (0.212, 1.62), (0.217, 1.65), (0.21, 1.64), (0.22, 1.68), (0.17, 1.58), (0.182, 1.64)]
+        b, c = tbl[h_idx(approx_height)]
+        return b, c
+
+    def correct_force_for_geometry(self, depths: np.ndarray, forces: np.ndarray, p_ratio: float, approx_height: float) -> np.ndarray:
+        """Apply geometry correction: F_corrected = F_raw / (c * d^b). For Hertzian fit on non-ideal samples."""
+        b, c = self._get_force_correction_params(p_ratio, approx_height)
+        # Avoid division by zero for d near 0
+        d_safe = np.maximum(depths, 0.01)
+        return np.abs(forces) / (c * np.power(d_safe, b))
+
     # ---------------------- Material property detection ---------------------
     def detect_force_limit_reached(self, filename: str) -> Tuple[bool, float]:
         try:
@@ -482,18 +521,18 @@ class IndentationAnalyzer:
         return 0.5, "gel"
 
     # ----------------------- Hertzian model and fitting ---------------------
-    def find_E(self, A: float, p_ratio: float) -> float:
+    def find_E(self, A: float, poisson_ratio: float) -> float:
         if A <= 0:
             raise ValueError(f"Fitted parameter A must be positive, got {A}")
-        if not (0.1 <= p_ratio <= 0.5):
-            raise ValueError(f"Poisson's ratio must be between 0.1 and 0.5, got {p_ratio}")
+        if not (0.1 <= poisson_ratio <= 0.5):
+            raise ValueError(f"Poisson's ratio must be between 0.1 and 0.5, got {poisson_ratio}")
 
         R = self.SPHERE_RADIUS
-        A_SI = A * (1000 ** 1.5)
+        A_SI = A * (1000 ** 1.5) # Convert A to SI units (N/mm^1.5) to (N/m^1.5)
         E_star = (3.0 / 4.0) * A_SI / (R ** 0.5) # E* is the reduced elastic modulus
         # Include indenter contribution (full relationship)
-        E_sample = E_star * (1 - p_ratio ** 2)
-        E_inv = (1 - p_ratio ** 2) / E_sample - (1 - self.SPHERE_NU ** 2) / self.SPHERE_E
+        E_sample = E_star * (1 - poisson_ratio ** 2)
+        E_inv = (1 - poisson_ratio ** 2) / E_sample - (1 - self.SPHERE_NU ** 2) / self.SPHERE_E
         return 1 / E_inv if E_inv != 0 else E_sample
     
     def adjust_E(self, E: float) -> float:
@@ -604,10 +643,14 @@ class IndentationAnalyzer:
         apply_system_correction: bool = True,
         retrospective_threshold: Optional[float] = None,
         max_depth: float = 0.5,  # Maximum depth (mm) to use for analysis (default: 0.5 mm)
+        min_depth: float = 0.25,  # Hertzian only: min depth; 0.25 = legacy 0.25–0.5 mm. Linear always uses 0–max_depth.
+        apply_force_correction: bool = False,  # Hertzian only: geometry correction (F/(c*d^b)) before fit
+        iterative_d0_refinement: bool = False,  # Hertzian only: KABlab iterative d0 refinement until |d0|<0.01 mm
+        well_bottom_z: float = -85.0,  # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
-            poisson_ratio, material_type = self.determine_poisson_ratio(filename)
+            poisson_ratio, material_type = self.determine_poisson_ratio(filename) # auto-detect from file
         elif poisson_ratio is None:
             print("❌ Poisson's ratio must be provided if filename is not available")
             return None
@@ -689,18 +732,30 @@ class IndentationAnalyzer:
         # Depths and forces from contact
         depths, zc, forces_from_contact = self.calculate_indentation_depth(z_positions, first_idx, corrected_forces)
 
-        # Filter to analysis range
-        # Use max_depth parameter (default: 0.5 mm)
-        depth_limit = max_depth
-        print(f"📏 Using max_depth: {max_depth:.3f} mm for analysis")
+        # Filter to analysis range (min_depth/max_depth apply to Hertzian only; linear uses 0 to max_depth)
+        d_max = max_depth
+        is_hertzian = fit_method.lower() != "linear"
+        if is_hertzian:
+            d_min = min_depth
+            if d_max <= d_min:
+                d_max = max(d_min + 0.25, 0.5)
+                print(f"⚠️ max_depth <= min_depth; using max_depth={d_max:.3f} mm")
+            print(f"📏 Using depth range: {d_min:.3f}–{d_max:.3f} mm for analysis (Hertzian)")
+        else:
+            d_min = 0.0  # Linear: always use full range from contact
+            print(f"📏 Using depth range: 0–{d_max:.3f} mm for analysis (Linear)")
         
         d_in, f_in = [], []
+        d_full, f_full = [], []  # 0 to d_max for plotting when min_depth > 0 (Hertzian only)
         for d, f in zip(depths, forces_from_contact):
-            if 0 <= d <= depth_limit:
+            if 0 <= d <= d_max:
+                d_full.append(d)
+                f_full.append(abs(f))
+            if d_min <= d <= d_max:
                 d_in.append(d)
                 f_in.append(f)
         if len(d_in) < 5:
-            print(f"❌ Not enough data points in analysis range (0 to {depth_limit:.3f} mm)")
+            print(f"❌ Not enough data points in analysis range ({d_min:.3f}–{d_max:.3f} mm)")
             return None
         
         # Remove last point if exceeds force limit
@@ -708,11 +763,27 @@ class IndentationAnalyzer:
             d_in = d_in[:-1]
             f_in = f_in[:-1]
 
-        approx_h = self.calculate_approx_height(zc)
+        approx_h = self.calculate_approx_height(zc, well_bottom_z)
 
         # Choose fitting method: Hertzian or Linear
         d_arr = np.array(d_in)
         f_arr = np.abs(np.array(f_in))
+
+        # Apply geometry-based force correction for Hertzian (legacy KABlab method)
+        if apply_force_correction and fit_method.lower() != "linear":
+            f_arr = self.correct_force_for_geometry(d_arr, f_arr, poisson_ratio, approx_h)
+            print(f"📐 Applied geometry force correction (b, c from simulation lookup)")
+
+        # Full range (0 to d_max) for plotting when min_depth > 0
+        depth_full_list = None
+        forces_full_list = None
+        if d_min > 0 and len(d_full) > 0 and fit_method.lower() != "linear":
+            d_full_arr = np.array(d_full)
+            f_full_arr = np.array(f_full)
+            if apply_force_correction:
+                f_full_arr = self.correct_force_for_geometry(d_full_arr, f_full_arr, poisson_ratio, approx_h)
+            depth_full_list = list(d_full_arr)
+            forces_full_list = list(f_full_arr)
         
         if fit_method.lower() == "linear":
             # Linear fitting: F = k * d
@@ -745,8 +816,96 @@ class IndentationAnalyzer:
             # Hertzian fitting (default)
             original_E = None
             original_r2 = None
-            
-            if apply_system_correction:
+            fit = None
+            fit_A = 0.0
+            fit_d0 = 0.0
+            d_corrected = None
+            d_arr_final = d_arr
+            f_arr_final = f_arr
+
+            if iterative_d0_refinement:
+                # KABlab legacy: iterative d0 refinement until |d0| < 0.01 mm
+                print("🔄 Using iterative d0 refinement (KABlab legacy)")
+                depths_full = np.array(depths, dtype=float)
+                forces_full = np.abs(np.array(forces_from_contact, dtype=float))
+                lb, ub = [0.0, -0.5], [np.inf, 0.5]
+                max_iter = 300
+                for count in range(max_iter):
+                    # Filter to depth range
+                    mask = (depths_full >= d_min) & (depths_full <= d_max)
+                    d_arr = depths_full[mask]
+                    f_arr = forces_full[mask]
+                    if len(d_arr) < 5:
+                        print(f"❌ Iterative refinement: too few points at iter {count}")
+                        fit = None
+                        break
+                    # Remove last point if exceeds force limit
+                    if len(f_arr) > 1 and abs(f_arr[-1]) > self.FORCE_LIMIT:
+                        d_arr = d_arr[:-1]
+                        f_arr = f_arr[:-1]
+                    if len(d_arr) < 5:
+                        print(f"❌ Iterative refinement: too few points after filter at iter {count}")
+                        fit = None
+                        break
+                    # Apply geometry force correction
+                    if apply_force_correction:
+                        f_arr = self.correct_force_for_geometry(d_arr, f_arr, poisson_ratio, approx_h)
+                    # Apply system compliance
+                    if apply_system_correction:
+                        d_corr = self.correct_depth_for_system_compliance(d_arr, f_arr, well=well)
+                    else:
+                        d_corr = d_arr
+                    # Fit
+                    fit = self.fit_hertz_model(d_corr, f_arr, bounds=(lb, ub))
+                    if fit.params is None:
+                        print(f"❌ Iterative refinement: fit failed at iter {count}")
+                        break
+                    fit_A = float(fit.params[0])
+                    fit_d0 = float(fit.params[1])
+                    if abs(fit_d0) < 0.01:
+                        print(f"✅ Iterative d0 refinement converged at iter {count + 1}")
+                        d_corrected = d_corr
+                        d_arr_final = d_arr.copy()
+                        f_arr_final = f_arr.copy()
+                        d_in = list(d_arr_final)
+                        f_arr = f_arr_final
+                        break
+                    min_d0 = abs(fit_d0) if count == 0 else min(min_d0, abs(fit_d0))
+                    if count > 0 and abs(round(old_d0, 5)) == abs(round(fit_d0, 5)):
+                        fit_d0 = -0.75 * fit_d0
+                    old_d0 = fit_d0
+                    depths_full = depths_full - fit_d0
+                    if count > 100 and count < 200 and abs(round(fit_d0, 2)) == round(min_d0, 2):
+                        d_corrected = d_corr
+                        d_arr_final = d_arr.copy()
+                        f_arr_final = f_arr.copy()
+                        d_in = list(d_arr_final)
+                        f_arr = f_arr_final
+                        break
+                    if count >= 200 and count < 300 and abs(round(fit_d0, 1)) == round(min_d0, 1):
+                        d_corrected = d_corr
+                        d_arr_final = d_arr.copy()
+                        f_arr_final = f_arr.copy()
+                        d_in = list(d_arr_final)
+                        f_arr = f_arr_final
+                        break
+                    if count == max_iter - 1:
+                        print("⚠️ Iterative d0 refinement reached max iterations (300)")
+                        d_corrected = d_corr
+                        d_arr_final = d_arr.copy()
+                        f_arr_final = f_arr.copy()
+                        d_in = list(d_arr_final)
+                        f_arr = f_arr_final
+                if fit is None or fit.params is None:
+                    print("❌ Hertzian fitting failed (iterative)")
+                    return None
+                if d_corrected is None:
+                    d_corrected = d_corr
+                    d_arr_final = d_arr.copy()
+                    f_arr_final = f_arr.copy()
+                    d_in = list(d_arr_final)
+                    f_arr = f_arr_final
+            elif apply_system_correction:
                 print("🔬 Using Hertzian fitting with system compliance correction")
                 # First, fit original (uncorrected) data to get original E
                 # Use optimized bounds: d0 in [-0.5, 0.5] mm for fine-tuning contact position
@@ -777,17 +936,19 @@ class IndentationAnalyzer:
             else:
                 print("🔬 Using Hertzian fitting (no system compliance correction)")
                 d_corrected = d_arr
-            
-            # Use optimized bounds: d0 in [-0.5, 0.5] mm for fine-tuning contact position
-            lb = [0.0, -0.5]
-            ub = [np.inf, 0.5]
-            fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
-            if fit.params is None:
-                print("❌ Hertzian fitting failed")
-                return None
-            
-            fit_A = float(fit.params[0])
-            fit_d0 = float(fit.params[1])
+
+            if not iterative_d0_refinement:
+                # Single fit (non-iterative)
+                lb = [0.0, -0.5]
+                ub = [np.inf, 0.5]
+                fit = self.fit_hertz_model(d_corrected, f_arr, bounds=(lb, ub))
+                if fit.params is None:
+                    print("❌ Hertzian fitting failed")
+                    return None
+                fit_A = float(fit.params[0])
+                fit_d0 = float(fit.params[1])
+                d_arr_final = d_arr
+                f_arr_final = f_arr
 
             E = round(self.adjust_E(self.find_E(fit_A, poisson_ratio)))
             if fit.covariance is not None:
@@ -836,6 +997,8 @@ class IndentationAnalyzer:
             corrected_depths=corrected_depths if fit_method.lower() != "linear" else None,
             original_elastic_modulus=original_E if apply_system_correction and fit_method.lower() != "linear" else None,
             original_fit_quality=float(round(original_r2, 3)) if apply_system_correction and fit_method.lower() != "linear" and original_r2 is not None else None,
+            depth_full=depth_full_list,
+            forces_full=forces_full_list,
         )
 
         # Optional per-direction subset plots when direction info exists
@@ -858,12 +1021,14 @@ class IndentationAnalyzer:
                     order = np.argsort(depths_sub)
                     d_sorted = np.array([depths_sub[i] for i in order])
                     f_sorted = np.array([f_sub[i] for i in order])
-                    # Use the same depth_limit as the main analysis
-                    mask = (d_sorted >= 0) & (d_sorted <= depth_limit)
+                    # Use the same depth range as the main analysis
+                    mask = (d_sorted >= d_min) & (d_sorted <= d_max)
                     d_use = d_sorted[mask]
-                    f_use = f_sorted[mask]
+                    f_use = np.array(f_sorted[mask], dtype=float)
                     if len(d_use) < 5:
                         return
+                    if apply_force_correction:
+                        f_use = self.correct_force_for_geometry(np.array(d_use), f_use, poisson_ratio, approx_h)
                     sub_fit = self.fit_hertz_model(d_use, f_use, bounds=(lb, ub))
                     if sub_fit.params is None:
                         return

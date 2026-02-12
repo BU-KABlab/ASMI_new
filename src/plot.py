@@ -41,10 +41,16 @@ class AnalysisResult:
 class ASMIPlotter:
     """Handles all plotting functions for ASMI analysis"""
     
-    def __init__(self):
-        # Create an analyzer instance to use for analysis calculations
-        # This ensures we use the same analysis logic as the main analyzer
+    def __init__(self, font_size: float = 10.0):
+        """Initialize plotter.
+        
+        Args:
+            font_size: Base font size for plot labels. Use smaller values (e.g., 8) when
+                plots will be resized smaller in PowerPoint for better proportions.
+                Title = font_size+2, labels = font_size, ticks/small = font_size-2.
+        """
         self._analyzer = IndentationAnalyzer()
+        self.font_size = font_size
     
     def plot_raw_data_all_wells(self, run_folder: str, save_plot: bool = True):
         """Plot raw data (absolute values) for all wells in a single plot.
@@ -164,6 +170,7 @@ class ASMIPlotter:
 
     def plot_raw_force_individual_wells(self, run_folder: str, save_plot: bool = True):
         """Generate individual raw force plots for each well in a run"""
+        fs = self.font_size
         data_dir = "results/measurements"
         run_path = os.path.join(data_dir, run_folder)
         
@@ -229,26 +236,29 @@ class ASMIPlotter:
                     plt.plot(z_down, f_down, 'b-o', alpha=0.7, markersize=3, linewidth=1, label='Downward (corrected)')
                     if z_up:
                         plt.plot(z_up, f_up, 'orange', marker='o', alpha=0.7, markersize=3, linewidth=1, label='Return (corrected)')
-                    plt.xlabel('Z Position (mm)')
-                    plt.ylabel('Corrected Force (N)')
-                    plt.title(f'Well {well_name} - Corrected Force (Down vs Return)')
-                    plt.legend()
+                    plt.xlabel('Z Position (mm)', fontsize=fs)
+                    plt.ylabel('Corrected Force (N)', fontsize=fs)
+                    plt.title(f'Well {well_name} - Corrected Force (Down vs Return)', fontsize=fs + 2)
+                    plt.legend(fontsize=max(6, fs - 2))
+                    plt.tick_params(axis='both', labelsize=max(6, fs - 2))
                     plt.grid(True, alpha=0.3)
                 else:
                     # Fallback: plot raw and corrected in subplots (legacy)
                     plt.subplot(2, 1, 1)
                     raw_forces = [float(row[2]) for row in data_rows]
                     plt.plot(z_positions, raw_forces, 'b-o', alpha=0.7, markersize=3, linewidth=1, label='Raw Force')
-                    plt.xlabel('Z Position (mm)')
-                    plt.ylabel('Raw Force (N)')
-                    plt.title(f'Well {well_name} - Raw Force Data')
-                    plt.legend(); plt.grid(True, alpha=0.3)
+                    plt.xlabel('Z Position (mm)', fontsize=fs)
+                    plt.ylabel('Raw Force (N)', fontsize=fs)
+                    plt.title(f'Well {well_name} - Raw Force Data', fontsize=fs + 2)
+                    plt.legend(fontsize=max(6, fs - 2)); plt.grid(True, alpha=0.3)
+                    plt.tick_params(axis='both', labelsize=max(6, fs - 2))
                     plt.subplot(2, 1, 2)
                     plt.plot(z_positions, corrected_forces, 'r-o', alpha=0.7, markersize=3, linewidth=1, label='Corrected Force')
-                    plt.xlabel('Z Position (mm)')
-                    plt.ylabel('Corrected Force (N)')
-                    plt.title(f'Well {well_name} - Corrected Force Data')
-                    plt.legend(); plt.grid(True, alpha=0.3)
+                    plt.xlabel('Z Position (mm)', fontsize=fs)
+                    plt.ylabel('Corrected Force (N)', fontsize=fs)
+                    plt.title(f'Well {well_name} - Corrected Force Data', fontsize=fs + 2)
+                    plt.legend(fontsize=max(6, fs - 2)); plt.grid(True, alpha=0.3)
+                    plt.tick_params(axis='both', labelsize=max(6, fs - 2))
                 
                 plt.tight_layout()
                 
@@ -272,6 +282,7 @@ class ASMIPlotter:
         If directions are provided, plot down vs return separately in one plot.
         If direction_label is provided, treat inputs as a single-direction subset and add to title/filename.
         """
+        fs = self.font_size
         plt.figure(figsize=(12, 8))
 
         # Baseline-corrected forces
@@ -325,16 +336,17 @@ class ASMIPlotter:
             # Add vertical line at contact point
             plt.axvline(x=contact_z, color='red', linestyle='--', alpha=0.5)
         
-        plt.xlabel('Z Position (mm)')
-        plt.ylabel('Corrected Force (N)')
+        plt.xlabel('Z Position (mm)', fontsize=fs)
+        plt.ylabel('Corrected Force (N)', fontsize=fs)
         title_method = method if method and method != "unknown" else "contact"
         # For legacy data (no direction info) do not append "down vs return"
         if has_direction:
             dir_title = f" ({direction_label})" if direction_label else " (down vs return)"
         else:
             dir_title = ""
-        plt.title(f'Well {well_name} - Contact Point Detection{dir_title} (Method: {title_method})')
-        plt.legend()
+        plt.title(f'Well {well_name} - Contact Point Detection{dir_title} (Method: {title_method})', fontsize=fs + 2)
+        plt.legend(fontsize=max(6, fs - 2))
+        plt.tick_params(axis='both', labelsize=max(6, fs - 2))
         plt.grid(True, alpha=0.3)
         
         if save_plot:
@@ -368,6 +380,7 @@ class ASMIPlotter:
         If adjusted_forces are available, plot data points and fit.
         If not, plot fit-only using the available depth range.
         """
+        fs = self.font_size
         depths_ok = bool(getattr(result, 'depth_in_range', None)) and len(result.depth_in_range) > 0
         forces_avail = hasattr(result, 'adjusted_forces') and bool(getattr(result, 'adjusted_forces', None))
 
@@ -392,12 +405,12 @@ class ASMIPlotter:
             else:
                 summary_text = f'Well {result.well}\nE = {result.elastic_modulus} Pa\nA = {result.fit_A:.3f}\nd0 = {result.fit_d0:.3f} mm\nR² = {result.fit_quality}'
             plt.text(0.5, 0.5, summary_text,
-                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=14,
+                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=fs + 2,
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
             plt.xlim(0, 1)
             plt.ylim(0, 1)
             plt.axis('off')
-            plt.title(f'Well {result.well}: Analysis Summary (No Detailed Data)')
+            plt.title(f'Well {result.well}: Analysis Summary (No Detailed Data)', fontsize=fs + 2)
         else:
             plt.figure(figsize=(10, 6))
             depths_array = np.array(result.depth_in_range)
@@ -480,6 +493,21 @@ class ASMIPlotter:
                     fit_depths = np.linspace(0, max_depth, 100)
                     fit_forces = result.fit_A * (fit_depths) ** 1.5
 
+            # Plot extended range (0–min_depth) when depth_full/forces_full available
+            depth_full = getattr(result, 'depth_full', None)
+            forces_full = getattr(result, 'forces_full', None)
+            if not is_linear and depth_full and forces_full and len(depth_full) > 0 and len(forces_full) == len(depth_full):
+                d_full_arr = np.array(depth_full)
+                f_full_arr = np.array(forces_full)
+                # Separate extended (0–min in fit range) from fit range
+                fit_min = min(result.depth_in_range)
+                mask_ext = d_full_arr < fit_min
+                if np.any(mask_ext):
+                    d_ext = d_full_arr[mask_ext]
+                    f_ext = f_full_arr[mask_ext]
+                    shifted_ext = np.maximum(d_ext - result.fit_d0, 0)
+                    plt.scatter(shifted_ext, f_ext, alpha=0.5, s=20, color='gray', 
+                              label=f'Extended (0–{fit_min:.2f} mm)')
             if forces_avail:
                 if is_linear:
                     # For linear fits, plot the actual data points
@@ -520,11 +548,11 @@ class ASMIPlotter:
             # Draw the fitted curve and labels
             if is_linear:
                 plt.plot(fit_depths, fit_forces, 'r-', label=f'Linear Fit (k={k_val:.3f}, b={b_val:.3f})')
-                plt.xlabel('Indentation Depth (mm)')
-                plt.ylabel('Force (N)')
+                plt.xlabel('Indentation Depth (mm)', fontsize=fs)
+                plt.ylabel('Force (N)', fontsize=fs)
                 dir_title = f" ({direction_label})" if direction_label else ""
                 r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
-                plt.title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}')
+                plt.title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}', fontsize=fs + 2)
             else:
                 if use_system_correction:
                     # Plot both fits in different colors
@@ -537,12 +565,13 @@ class ASMIPlotter:
                     plt.plot(fit_depths, fit_forces, 'r-', linewidth=2, 
                             label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, A = {result.fit_A:.3f}, d0 = {result.fit_d0:.3f} mm, R² = {result.fit_quality:.3f}')
                 
-                plt.xlabel('Indentation Depth (mm)')
-                plt.ylabel('Force (N)')
+                plt.xlabel('Indentation Depth (mm)', fontsize=fs)
+                plt.ylabel('Force (N)', fontsize=fs)
                 # Simplified title: just "Well E5 measurement" (or well name)
                 well_name = result.well.upper()
-                plt.title(f'Well {well_name} measurement')
-            plt.legend()
+                plt.title(f'Well {well_name} measurement', fontsize=fs + 2)
+            plt.legend(fontsize=max(6, fs - 2))
+            plt.tick_params(axis='both', labelsize=max(6, fs - 2))
             plt.grid(True, alpha=0.3)
 
         if save_plot:
@@ -592,6 +621,7 @@ class ASMIPlotter:
         """Plot a 96-well plate heatmap from a summary CSV.
 
         CSV columns expected: 'Well', value_col (default 'ElasticModulus'), optional 'R2', optional 'Std'.
+        Font sizes scale with plotter.font_size for consistent resizing in PowerPoint.
         
         Args:
             summary_csv: Path to CSV file with well data
@@ -602,6 +632,7 @@ class ASMIPlotter:
             convert_to_mpa: Convert Pa to MPa for ElasticModulus (default: True)
             title_suffix: Optional suffix to add to the title (e.g., " (System Corrected)")
         """
+        fs = self.font_size
         ROWS = list(string.ascii_uppercase[:8])
         COLS = list(range(1, 13))
         well_to_idx = {(f"{row}{col}"): (i, j) for i, row in enumerate(ROWS) for j, col in enumerate(COLS)}
@@ -650,11 +681,11 @@ class ASMIPlotter:
                     rgb = cmap_obj(norm(value))[:3]
                     brightness = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
                     text_color = 'black' if brightness > 0.5 else 'white'
-                    ax.text(x, y+0.1, f"{value:.2f}", ha='center', va='center', fontsize=12, color=text_color, fontweight='bold')
+                    ax.text(x, y+0.1, f"{value:.2f}", ha='center', va='center', fontsize=fs + 2, color=text_color, fontweight='bold')
                     if has_std and stdmap is not None and not _np.isnan(stdmap[i, j]):
-                        ax.text(x, y-0.05, f"±{stdmap[i, j]:.2f}", ha='center', va='center', fontsize=8, color=text_color, fontweight='bold')
+                        ax.text(x, y-0.05, f"±{stdmap[i, j]:.2f}", ha='center', va='center', fontsize=fs, color=text_color, fontweight='bold')
                     if has_r2 and r2map is not None and not _np.isnan(r2map[i, j]):
-                        ax.text(x, y-0.2, f"R²={r2map[i, j]:.2f}", ha='center', va='center', fontsize=8, color=text_color)
+                        ax.text(x, y-0.2, f"R²={r2map[i, j]:.2f}", ha='center', va='center', fontsize=fs, color=text_color)
 
         ax.set_xlim(-0.5, 11.5)
         ax.set_ylim(-0.5, 7.5)
@@ -663,7 +694,7 @@ class ASMIPlotter:
         ax.set_xticklabels([str(c) for c in COLS])
         ax.set_yticks(range(8))
         ax.set_yticklabels(ROWS[::-1])
-        ax.tick_params(axis='both', which='major', labelsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=fs + 4)
 
         # Determine appropriate title and units based on value column
         if value_col == 'ElasticModulus':
@@ -695,13 +726,13 @@ class ASMIPlotter:
         if title_suffix:
             title = title + title_suffix
         
-        ax.set_title(title, fontsize=20)
+        ax.set_title(title, fontsize=fs + 10)
 
         sm = plt.cm.ScalarMappable(cmap=cmap_obj, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, pad=0.02)
-        cbar.set_label(f"{value_col} ({unit_label})", fontsize=18)
-        cbar.ax.tick_params(labelsize=16)
+        cbar.set_label(f"{value_col} ({unit_label})", fontsize=fs + 8)
+        cbar.ax.tick_params(labelsize=fs + 6)
 
         plt.tight_layout()
         if save_path:
@@ -750,6 +781,7 @@ class ASMIPlotter:
             convert_to_mpa: Convert Pa to MPa for display (default: True)
         """
         import pandas as pd
+        fs = self.font_size
         
         if not os.path.exists(summary_csv):
             print(f"❌ CSV file not found: {summary_csv}")
@@ -802,10 +834,11 @@ class ASMIPlotter:
         max_val = max(original.max(), corrected.max())
         ax1.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='y=x (no change)')
         
-        ax1.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=12)
-        ax1.set_ylabel(f'Corrected Elastic Modulus ({unit})', fontsize=12)
-        ax1.set_title('Original vs Corrected Elastic Modulus', fontsize=14, fontweight='bold')
-        ax1.legend()
+        ax1.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=fs)
+        ax1.set_ylabel(f'Corrected Elastic Modulus ({unit})', fontsize=fs)
+        ax1.set_title('Original vs Corrected Elastic Modulus', fontsize=fs + 2, fontweight='bold')
+        ax1.legend(fontsize=max(6, fs - 2))
+        ax1.tick_params(axis='both', labelsize=max(6, fs - 2))
         ax1.grid(True, alpha=0.3)
         ax1.set_aspect('equal', adjustable='box')
         
@@ -813,10 +846,11 @@ class ASMIPlotter:
         ax2 = fig.add_subplot(gs[0, 1])
         ax2.hist(original, bins=20, alpha=0.6, label=f'Original (μ={orig_mean:.2f}, σ={orig_std:.2f})', color='blue', edgecolor='black')
         ax2.hist(corrected, bins=20, alpha=0.6, label=f'Corrected (μ={corr_mean:.2f}, σ={corr_std:.2f})', color='red', edgecolor='black')
-        ax2.set_xlabel(f'Elastic Modulus ({unit})', fontsize=12)
-        ax2.set_ylabel('Frequency', fontsize=12)
-        ax2.set_title('Distribution Comparison', fontsize=14, fontweight='bold')
-        ax2.legend()
+        ax2.set_xlabel(f'Elastic Modulus ({unit})', fontsize=fs)
+        ax2.set_ylabel('Frequency', fontsize=fs)
+        ax2.set_title('Distribution Comparison', fontsize=fs + 2, fontweight='bold')
+        ax2.legend(fontsize=max(6, fs - 2))
+        ax2.tick_params(axis='both', labelsize=max(6, fs - 2))
         ax2.grid(True, alpha=0.3, axis='y')
         
         # 3. Box plot comparison
@@ -825,8 +859,9 @@ class ASMIPlotter:
         bp = ax3.boxplot(box_data, labels=['Original', 'Corrected'], patch_artist=True)
         bp['boxes'][0].set_facecolor('lightblue')
         bp['boxes'][1].set_facecolor('lightcoral')
-        ax3.set_ylabel(f'Elastic Modulus ({unit})', fontsize=12)
-        ax3.set_title('Box Plot Comparison', fontsize=14, fontweight='bold')
+        ax3.set_ylabel(f'Elastic Modulus ({unit})', fontsize=fs)
+        ax3.set_title('Box Plot Comparison', fontsize=fs + 2, fontweight='bold')
+        ax3.tick_params(axis='both', labelsize=max(6, fs - 2))
         ax3.grid(True, alpha=0.3, axis='y')
         
         # 4. Difference plot (Corrected - Original)
@@ -835,21 +870,23 @@ class ASMIPlotter:
         percent_change = (difference / original * 100) if original.mean() > 0 else difference
         ax4.scatter(original, difference, alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
         ax4.axhline(y=0, color='r', linestyle='--', linewidth=2)
-        ax4.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=12)
-        ax4.set_ylabel(f'Difference: Corrected - Original ({unit})', fontsize=12)
-        ax4.set_title('Correction Effect', fontsize=14, fontweight='bold')
+        ax4.set_xlabel(f'Original Elastic Modulus ({unit})', fontsize=fs)
+        ax4.set_ylabel(f'Difference: Corrected - Original ({unit})', fontsize=fs)
+        ax4.set_title('Correction Effect', fontsize=fs + 2, fontweight='bold')
+        ax4.tick_params(axis='both', labelsize=max(6, fs - 2))
         ax4.grid(True, alpha=0.3)
         
         # 5. Percent change distribution
         ax5 = fig.add_subplot(gs[1, 1])
         ax5.hist(percent_change, bins=20, alpha=0.7, color='green', edgecolor='black')
         ax5.axvline(x=0, color='r', linestyle='--', linewidth=2)
-        ax5.set_xlabel('Percent Change (%)', fontsize=12)
-        ax5.set_ylabel('Frequency', fontsize=12)
-        ax5.set_title('Percent Change Distribution', fontsize=14, fontweight='bold')
+        ax5.set_xlabel('Percent Change (%)', fontsize=fs)
+        ax5.set_ylabel('Frequency', fontsize=fs)
+        ax5.set_title('Percent Change Distribution', fontsize=fs + 2, fontweight='bold')
         mean_pct = np.mean(percent_change)
         ax5.axvline(x=mean_pct, color='orange', linestyle='--', linewidth=2, label=f'Mean: {mean_pct:.1f}%')
-        ax5.legend()
+        ax5.legend(fontsize=max(6, fs - 2))
+        ax5.tick_params(axis='both', labelsize=max(6, fs - 2))
         ax5.grid(True, alpha=0.3, axis='y')
         
         # 6. Statistics summary
@@ -892,13 +929,13 @@ class ASMIPlotter:
         • Mean Change: {corr_mean - orig_mean:.2f} {unit} ({mean_pct:.1f}%)
         """
         
-        ax6.text(0.1, 0.95, stats_text, transform=ax6.transAxes, fontsize=10,
+        ax6.text(0.1, 0.95, stats_text, transform=ax6.transAxes, fontsize=fs,
                 verticalalignment='top', family='monospace',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
         # Overall title
         fig.suptitle('System Correction Analysis: Elastic Modulus Comparison', 
-                    fontsize=16, fontweight='bold', y=0.98)
+                    fontsize=fs + 6, fontweight='bold', y=0.98)
         
         plt.tight_layout(rect=[0, 0, 1, 0.96])
         

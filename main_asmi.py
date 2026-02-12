@@ -9,7 +9,7 @@ Supports two workflows:
 Also supports splitting direction-tagged measurements into _down/_up CSVs and per-direction analysis/plots.
 
 Author: Hongrui Zhang
-Date: 09/2025
+Date: 02/2026
 License: MIT
 """
 
@@ -127,7 +127,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None, max_depth: float = 0.5):
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None, max_depth: float = 0.5, min_depth: float = 0.25, apply_force_correction: bool = False, iterative_d0_refinement: bool = False, well_bottom_z: float = -85.0, poisson_ratio: float | None = None):
     """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
@@ -144,24 +144,32 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
     try:
         result = analyzer.analyze_well(
             well=well,
-            poisson_ratio=None,  # auto-detect from file
+            poisson_ratio=poisson_ratio,  # None = auto-detect from file
             filename=datafile,
             contact_method=method_key,
             fit_method=fit_method,
             apply_system_correction=apply_system_correction,
             retrospective_threshold=retrospective_threshold,
             max_depth=max_depth,
+            min_depth=min_depth,
+            apply_force_correction=apply_force_correction,
+            iterative_d0_refinement=iterative_d0_refinement,
+            well_bottom_z=well_bottom_z,
         )
     except TypeError:
         # Fall back if analyze_well does not accept contact_method
         result = analyzer.analyze_well(
             well=well,
-            poisson_ratio=None,
+            poisson_ratio=poisson_ratio,
             filename=datafile,
             fit_method=fit_method,
             apply_system_correction=apply_system_correction,
             retrospective_threshold=retrospective_threshold,
             max_depth=max_depth,
+            min_depth=min_depth,
+            apply_force_correction=apply_force_correction,
+            iterative_d0_refinement=iterative_d0_refinement,
+            well_bottom_z=well_bottom_z,
         )
 
     if not result:
@@ -211,6 +219,11 @@ def run_measure_analyze_plot(
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
     max_depth: float | None = None,
+    min_depth: float = 0.25,
+    apply_force_correction: bool = False,
+    iterative_d0_refinement: bool = False,
+    well_bottom_z: float = -85.0,
+    poisson_ratio: float | None = None,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
@@ -291,17 +304,17 @@ def run_measure_analyze_plot(
                 well_down = "indentation_down"
                 well_up = "indentation_up"
             if down_csv:
-                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
+                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio)
                 if r_down:
                     per_well_results.append(r_down)
             if up_csv:
-                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
+                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio)
                 if r_up:
                     per_well_results.append(r_up)
         else:
             # No return pass: analyze the original file with plain well ID (no _down suffix)
             plain_well = well.upper() if well is not None else "indentation"
-            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth)
+            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio)
             if r_single:
                 per_well_results.append(r_single)
 
@@ -497,6 +510,7 @@ def main(
     step_size: float = 0.02,
     force_limit: float = 5.0,
     well_top_z: float | None = -9.0,
+    well_bottom_z: float = -85.0,  # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|
     existing_measured_with_return: bool = True,
     show_version: bool = False,
     move_to_pickup: bool = False,
@@ -507,6 +521,10 @@ def main(
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
     max_depth: float = 0.5,  # Maximum depth (mm) to use for analysis (default: 0.5 mm)
+    min_depth: float = 0.25,  # Minimum depth (mm); 0 = full range, 0.25 = legacy 0.25–0.5 mm
+    apply_force_correction: bool = False,  # Apply geometry correction (KABlab legacy) before Hertzian fit
+    iterative_d0_refinement: bool = False,  # iterative d0 refinement until |d0|<0.01 mm
+    poisson_ratio: float | None = None,  # Sample Poisson's ratio; None = auto-detect from filename
 ):
     """Parameter-based entry point.
     
@@ -521,14 +539,20 @@ def main(
         step_size: Movement step size (mm)
         force_limit: Force limit (N)
         well_top_z: Well top position before indentation (mm) or None to use current Z position
+        well_bottom_z: Well bottom Z (mm); sample height = |contact_z - well_bottom_z| (default: -85)
         existing_measured_with_return: Whether existing data has return measurements
         show_version: Display version information and exit
         move_to_pickup: Move to pickup position after measurements
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
         fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
         max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
+        min_depth: Minimum depth (mm) for Hertzian fit only; 0 = full range, 0.25 = legacy 0.25–0.5 mm. Linear always uses 0–max_depth.
+        apply_force_correction: Apply geometry-based force correction (F/(c*d^b)) before Hertzian fit only (KABlab legacy)
+        iterative_d0_refinement: Iterative d0 refinement until |d0|<0.01 mm (Hertzian only; KABlab legacy)
+        poisson_ratio: Sample Poisson's ratio for Hertzian fit (e.g., 0.5 for hydrogel). None = auto-detect from filename.
     """
-    
+
+
     if show_version:
         print_version()
         return
@@ -601,6 +625,11 @@ def main(
                     lock_xy_single_spot=lock_xy_single_spot,
                     lock_xy_position=resolved_locked_xy,
                     max_depth=max_depth,
+                    min_depth=min_depth,
+                    apply_force_correction=apply_force_correction,
+                    iterative_d0_refinement=iterative_d0_refinement,
+                    well_bottom_z=well_bottom_z,
+                    poisson_ratio=poisson_ratio,
                 )
                 if r:
                     if isinstance(r, list):
@@ -664,6 +693,11 @@ def main(
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
                         max_depth=max_depth,
+                        min_depth=min_depth,
+                        apply_force_correction=apply_force_correction,
+                        iterative_d0_refinement=iterative_d0_refinement,
+                        well_bottom_z=well_bottom_z,
+                        poisson_ratio=poisson_ratio,
                     )
                 elif well_name.lower().endswith("_up"):
                     r = analyze_file(
@@ -674,6 +708,11 @@ def main(
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
                         max_depth=max_depth,
+                        min_depth=min_depth,
+                        apply_force_correction=apply_force_correction,
+                        iterative_d0_refinement=iterative_d0_refinement,
+                        well_bottom_z=well_bottom_z,
+                        poisson_ratio=poisson_ratio,
                     )
                 else:
                     r = analyze_file(
@@ -684,6 +723,11 @@ def main(
                         apply_system_correction=apply_system_correction,
                         retrospective_threshold=retrospective_threshold,
                         max_depth=max_depth,
+                        min_depth=min_depth,
+                        apply_force_correction=apply_force_correction,
+                        iterative_d0_refinement=iterative_d0_refinement,
+                        well_bottom_z=well_bottom_z,
+                        poisson_ratio=poisson_ratio,
                     )
                 if r:
                     results.append(r)
@@ -830,7 +874,6 @@ def main(
                     )
                     # Run diagnostic to check for correction issues
                     try:
-                        from src.analysis import IndentationAnalyzer
                         tmp_analyzer = IndentationAnalyzer()
                         diag = tmp_analyzer.diagnose_correction_issue(summary_csv)
                         if diag.get('scatter_increased'):
@@ -1093,14 +1136,19 @@ if __name__ == "__main__":
         contact_method="retrospective",
         retrospective_threshold=0.05, # 0.05N for measuring the materials
         fit_method="hertzian",  # Try "hertzian" for elastic modulus
-        measure_with_return=False,
+        measure_with_return=False, # measure with return (up/down)
         move_to_pickup=False, # if True, move to pickup position after measurements
-         step_size=0.01,
+         step_size=0.01, # step size of the measurement (mm)
          z_target=-90.0,
          force_limit=10.0,
-         well_top_z=-73.0,
-        existing_run_folder="run_737_20260209_204208",
+         well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
+        existing_run_folder="run_737_20260209_204208_copy",
         existing_measured_with_return=False,
-        apply_system_correction=False,
-        max_depth=0.25, # Maximum depth (mm) to use for analysis. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
+        apply_system_correction=False, # apply system correction (account for the system compliance)
+        max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
+        min_depth=0.25, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
+        poisson_ratio=0.5, # Poisson's ratio for the sample
+        apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
+        iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
+        well_bottom_z=-84.8, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
          )
