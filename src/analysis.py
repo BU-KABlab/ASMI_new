@@ -192,7 +192,26 @@ class IndentationAnalyzer:
         self, z_positions: List[float], raw_forces: List[float], baseline: float, baseline_std: float
     ) -> int:
         return self.find_extraploation_contact_point(z_positions, raw_forces, baseline, baseline_std)
-    
+
+    def find_baseline_threshold_contact_point(
+        self, raw_forces: List[float], baseline: float, baseline_std: float
+    ) -> int:
+        """Find contact using original KABlab threshold: threshold = -baseline + 2*baseline_std.
+        No contact when raw_force > threshold; contact when raw_force <= threshold.
+        Returns first contact index = last no-contact index + 1.
+        """
+        if len(raw_forces) < 2:
+            return 0
+        threshold = -baseline + 2 * baseline_std
+        last_no_contact = -1
+        for i, f in enumerate(raw_forces):
+            if f > threshold:
+                last_no_contact = i
+        first_contact_idx = last_no_contact + 1
+        if first_contact_idx >= len(raw_forces):
+            first_contact_idx = 0
+        return first_contact_idx
+
     def find_retrospective_contact_point(self, corrected_forces: List[float], threshold: float, z_positions: List[float], use_gradient: bool = False) -> int:
         if len(corrected_forces) < 3:
             return 0
@@ -260,7 +279,19 @@ class IndentationAnalyzer:
     def calculate_approx_height(self, z_contact: float, well_bottom_z: float = -85.0) -> float:
         """Sample height = |z_contact - well_bottom_z| (distance from well bottom to contact/sample top)."""
         h = abs(z_contact - well_bottom_z)
-        return max(0.1, min(h, 50.0))
+        return max(0.1, min(h, 50.0)) # limit the height to 0.1-50.0 mm
+
+    def calculate_approx_height_legacy(self, depths: List[float], step_mm: float = 0.02) -> float:
+        """Original KABlab batch script formula: approx_height = 15 - (num*step + 3).
+        num = index of minimum |depth|. Used for (b,c) lookup compatibility with original."""
+        if not depths:
+            return 10.0
+        abs_depths = [abs(d) for d in depths]
+        zero = min(abs_depths)
+        num = abs_depths.index(zero)
+        z_pos = (num * step_mm) + 3
+        approx_height = 15 - z_pos
+        return max(0.1, min(approx_height, 50.0))
     
     def _load_spring_constant_map(self) -> Dict[str, float]:
         """Load well-specific spring constants from CSV file in src folder.
@@ -647,6 +678,8 @@ class IndentationAnalyzer:
         apply_force_correction: bool = False,  # Hertzian only: geometry correction (F/(c*d^b)) before fit
         iterative_d0_refinement: bool = False,  # Hertzian only: KABlab iterative d0 refinement until |d0|<0.01 mm
         well_bottom_z: float = -85.0,  # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|
+        use_legacy_height: bool = False,  # Use original batch script approx_height formula for (b,c) lookup
+        legacy_height_step_mm: float = 0.02,  # Step size (mm) for legacy height formula
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
@@ -697,6 +730,9 @@ class IndentationAnalyzer:
         elif contact_method == "simple_threshold":
             first_idx = self.find_contact_point(raw_forces, baseline, baseline_std)
             label_method = "simple_threshold"
+        elif contact_method == "baseline_threshold":
+            first_idx = self.find_baseline_threshold_contact_point(raw_forces, baseline, baseline_std)
+            label_method = "baseline_threshold"
         else:
             first_idx = self.find_extraploation_contact_point(z_positions, raw_forces, baseline, baseline_std)
             label_method = "extrapolation"
@@ -728,6 +764,18 @@ class IndentationAnalyzer:
                 directions=directions,
                 direction_label=dir_label,
             )
+
+            # Export well, depth, force CSV to plot folder
+            if run_folder:
+                plots_dir = "results/plots"
+                run_folder_plots = os.path.join(plots_dir, run_folder)
+                os.makedirs(run_folder_plots, exist_ok=True)
+                csv_path = os.path.join(run_folder_plots, f"{well}_depth_force.csv")
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    for i in range(len(z_positions)):
+                        w.writerow([well, z_positions[i], raw_forces[i]])
+                print(f"📄 Saved depth-force CSV: {csv_path}")
 
         # Depths and forces from contact
         depths, zc, forces_from_contact = self.calculate_indentation_depth(z_positions, first_idx, corrected_forces)
@@ -763,7 +811,11 @@ class IndentationAnalyzer:
             d_in = d_in[:-1]
             f_in = f_in[:-1]
 
-        approx_h = self.calculate_approx_height(zc, well_bottom_z)
+        if use_legacy_height:
+            approx_h = self.calculate_approx_height_legacy(depths, step_mm=legacy_height_step_mm)
+            print(f"📐 Using legacy approx_height = {approx_h:.2f} mm (original batch formula)")
+        else:
+            approx_h = self.calculate_approx_height(zc, well_bottom_z)
 
         # Choose fitting method: Hertzian or Linear
         d_arr = np.array(d_in)

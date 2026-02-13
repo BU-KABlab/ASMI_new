@@ -68,7 +68,7 @@ main(
 |----------|------|---------|-------------|
 | `do_measure` | bool | `True` | `True` to measure, `False` to analyze existing data |
 | `wells_to_test` | list[str] | `None` | List of wells (e.g., `["A1", "A2"]`) or `[None]` for current position |
-| `contact_method` | str | `"retrospective"` | `"extrapolation"`, `"retrospective"`, or `"simple_threshold"` |
+| `contact_method` | str | `"retrospective"` | `"extrapolation"`, `"retrospective"`, `"simple_threshold"`, or `"baseline_threshold"` |
 | `fit_method` | str | `"hertzian"` | `"hertzian"` for elastic modulus, `"linear"` for spring constant |
 | `apply_system_correction` | bool | `True` | Apply system compliance correction for Hertzian fits |
 
@@ -98,6 +98,8 @@ main(
 | `iterative_d0_refinement` | bool | `False` | **Hertzian only:** Iterative d0 refinement until \|d0\| < 0.01 mm (KABlab legacy) |
 | `well_bottom_z` | float | `-85.0` | Well bottom Z (mm); sample height = \|contact_z - well_bottom_z\| |
 | `poisson_ratio` | float | `None` | Sample Poisson's ratio; `None` = auto-detect from filename (e.g., 0.5 for hydrogel, 0.3 for glassy) |
+| `use_legacy_height` | bool | `False` | Use original batch script approx_height for (b,c) lookup (match original E) |
+| `legacy_height_step_mm` | float | `0.02` | Step size (mm) for legacy height formula; match `step_size` when measuring |
 | `marker_scale` | float | `1.0` | Scale factor for plot marker sizes; use >1 when resizing in PowerPoint |
 
 ### Advanced Parameters
@@ -259,6 +261,7 @@ results/
 - **`"retrospective"`**: Analyzes force data retrospectively from a threshold (recommended)
 - **`"extrapolation"`**: Linear extrapolation from force threshold
 - **`"simple_threshold"`**: Simple force threshold detection
+- **`"baseline_threshold"`**: Original KABlab formula: threshold = -baseline + 2×std
 
 ## Fitting Methods
 
@@ -273,16 +276,40 @@ results/
 
 Sample height is computed as **\|contact_z - well_bottom_z\|**. Set `well_bottom_z` (default -85 mm) to match your plate geometry. Used for geometry force correction lookup and summary output.
 
+## Batch Analysis (Original KABlab Pipeline)
+
+For analysis using the original batch script pipeline (baseline_threshold contact, geometry correction, iterative d0):
+
+```python
+from main_asmi_2 import main
+
+main(
+    existing_run_folder="run_774_20260206_133925",
+    p_ratio=0.5,
+    baseline_points=10,
+    save_plot=True,
+    save_heatmap=True,
+)
+```
+
+- **`main_asmi_2.py`**: Entry point for batch analysis; uses `src/analysis_batch_2.py`
+- **`src/analysis_batch_2.py`**: Original KABlab Hertzian fitting with geometry correction
+- **`src/convert_measurement_format.py`**: Converts Z/Raw_Force/Corrected_Force → well/depth/force
+- Output: `results/plots/<run_folder>/` (heatmap with E, ±std, R² per well)
+
 ## Project Structure
 
 ```
 ASMI_new/
-├── main_asmi.py              # Main entry point - edit parameters here
+├── main_asmi.py              # Main entry point - measure & analyze (src/analysis)
+├── main_asmi_2.py            # Batch analysis entry - original KABlab pipeline
 ├── src/
 │   ├── CNCController.py      # CNC machine control
 │   ├── ForceSensor.py        # Force sensor interface
 │   ├── ForceMonitoring.py    # Measurement protocols
-│   ├── analysis.py           # Data analysis and fitting
+│   ├── analysis.py           # Data analysis and fitting (extrapolation, retrospective, etc.)
+│   ├── analysis_batch_2.py   # Original KABlab batch analysis
+│   ├── convert_measurement_format.py  # Format conversion for batch pipeline
 │   └── plot.py               # Visualization functions
 ├── cad/                      # CAD files (STEP/STL)
 └── results/                  # Output data and plots
