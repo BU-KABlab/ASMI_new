@@ -127,7 +127,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
     return down_path, up_path
 
 
-def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None, max_depth: float = 0.5, min_depth: float = 0.25, apply_force_correction: bool = False, iterative_d0_refinement: bool = False, well_bottom_z: float = -85.0, poisson_ratio: float | None = None, use_legacy_height: bool = False, legacy_height_step_mm: float = 0.02):
+def analyze_file(datafile: str, well: str, contact_method: str = "retrospective", fit_method: str = "hertzian", apply_system_correction: bool = True, retrospective_threshold: float | None = None, max_depth: float = 0.5, min_depth: float = 0.25, apply_force_correction: bool = False, iterative_d0_refinement: bool = False, well_bottom_z: float = -85.0, poisson_ratio: float | None = None, use_legacy_height: bool = False, legacy_height_step_mm: float = 0.02, k_system_override: float | None = None):
     """Analyze a single CSV file and emit plots. Compatible with current src.Analysis."""
     data_dir, filename = os.path.split(datafile)
     analyzer = IndentationAnalyzer(data_dir or ".")
@@ -158,6 +158,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             well_bottom_z=well_bottom_z,
             use_legacy_height=use_legacy_height,
             legacy_height_step_mm=legacy_height_step_mm,
+            k_system_override=k_system_override,
         )
     except TypeError:
         # Fall back if analyze_well does not accept contact_method
@@ -175,6 +176,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             well_bottom_z=well_bottom_z,
             use_legacy_height=use_legacy_height,
             legacy_height_step_mm=legacy_height_step_mm,
+            k_system_override=k_system_override,
         )
 
     if not result:
@@ -232,6 +234,7 @@ def run_measure_analyze_plot(
     poisson_ratio: float | None = None,
     use_legacy_height: bool = False,
     legacy_height_step_mm: float = 0.02,
+    k_system_override: float | None = None,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
     # Use provided batch run folder or create one if missing
@@ -312,17 +315,17 @@ def run_measure_analyze_plot(
                 well_down = "indentation_down"
                 well_up = "indentation_up"
             if down_csv:
-                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
+                r_down = analyze_file(datafile=down_csv, well=well_down, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm, k_system_override=k_system_override)
                 if r_down:
                     per_well_results.append(r_down)
             if up_csv:
-                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
+                r_up = analyze_file(datafile=up_csv, well=well_up, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm, k_system_override=k_system_override)
                 if r_up:
                     per_well_results.append(r_up)
         else:
             # No return pass: analyze the original file with plain well ID (no _down suffix)
             plain_well = well.upper() if well is not None else "indentation"
-            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
+            r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm, k_system_override=k_system_override)
             if r_single:
                 per_well_results.append(r_single)
 
@@ -535,6 +538,7 @@ def main(
     poisson_ratio: float | None = None,  # Sample Poisson's ratio; None = auto-detect from filename
     use_legacy_height: bool = False,  # Use original batch script approx_height for (b,c) lookup (match original E)
     legacy_height_step_mm: float = 0.02,  # Step size (mm) for legacy height formula; match step_size if measuring
+    k_system_override: float | None = None,  # If set (N/mm), use this for all wells; bypasses heatmap lookup
 ):
     """Parameter-based entry point.
     
@@ -560,6 +564,7 @@ def main(
         apply_force_correction: Apply geometry-based force correction (F/(c*d^b)) before Hertzian fit only (KABlab legacy)
         iterative_d0_refinement: Iterative d0 refinement until |d0|<0.01 mm (Hertzian only; KABlab legacy)
         poisson_ratio: Sample Poisson's ratio for Hertzian fit (e.g., 0.5 for hydrogel). None = auto-detect from filename.
+        k_system_override: If set (N/mm), use this spring constant for all wells; bypasses well-specific heatmap lookup.
     """
 
 
@@ -642,6 +647,7 @@ def main(
                     poisson_ratio=poisson_ratio,
                     use_legacy_height=use_legacy_height,
                     legacy_height_step_mm=legacy_height_step_mm,
+                    k_system_override=k_system_override,
                 )
                 if r:
                     if isinstance(r, list):
@@ -712,6 +718,7 @@ def main(
                         poisson_ratio=poisson_ratio,
                         use_legacy_height=use_legacy_height,
                         legacy_height_step_mm=legacy_height_step_mm,
+                        k_system_override=k_system_override,
                     )
                 elif well_name.lower().endswith("_up"):
                     r = analyze_file(
@@ -729,6 +736,7 @@ def main(
                         poisson_ratio=poisson_ratio,
                         use_legacy_height=use_legacy_height,
                         legacy_height_step_mm=legacy_height_step_mm,
+                        k_system_override=k_system_override,
                     )
                 else:
                     r = analyze_file(
@@ -746,6 +754,7 @@ def main(
                         poisson_ratio=poisson_ratio,
                         use_legacy_height=use_legacy_height,
                         legacy_height_step_mm=legacy_height_step_mm,
+                        k_system_override=k_system_override,
                     )
                 if r:
                     results.append(r)
@@ -1162,13 +1171,13 @@ if __name__ == "__main__":
          well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
         existing_run_folder="run_774_20260206_133925",
         existing_measured_with_return=False,
-        apply_system_correction=False, # apply system correction (account for the system compliance)
+        apply_system_correction=False,  # apply system correction (account for the system compliance)
+        k_system_override=None,  # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
         max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
         min_depth=0.24, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
         poisson_ratio=0.5, # Poisson's ratio for the sample
         apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
         iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
         well_bottom_z=-27.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
-        use_legacy_height=True, # Use original batch script approx_height for (b,c) lookup (match original E)
-        legacy_height_step_mm=0.01, # Match step_size for legacy height formula
+        k_system_override=64.27, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
          )

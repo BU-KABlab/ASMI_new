@@ -199,6 +199,14 @@ class IndentationAnalyzer:
         """Find contact using original KABlab threshold: threshold = -baseline + 2*baseline_std.
         No contact when raw_force > threshold; contact when raw_force <= threshold.
         Returns first contact index = last no-contact index + 1.
+        base
+        Args:
+            raw_forces: List of raw forces
+            baseline: Baseline force
+            baseline_std: Baseline standard deviation
+            
+        Returns:
+            First contact index
         """
         if len(raw_forces) < 2:
             return 0
@@ -461,20 +469,29 @@ class IndentationAnalyzer:
         
         return diagnostics
     
-    def correct_depth_for_system_compliance(self, depths: np.ndarray, forces: np.ndarray, well: Optional[str] = None) -> np.ndarray:
+    def correct_depth_for_system_compliance(
+        self,
+        depths: np.ndarray,
+        forces: np.ndarray,
+        well: Optional[str] = None,
+        k_system_override: Optional[float] = None,
+    ) -> np.ndarray:
         """Correct measured depths for system compliance: d_true = d_measure - force / k_system
         
-        Uses well-specific spring constant from CSV if available, otherwise uses default K_SYSTEM.
+        Uses k_system_override if provided; else well-specific from CSV if available; else default K_SYSTEM.
         
         Args:
             depths: Measured indentation depths (mm)
             forces: Corresponding forces (N)
             well: Well identifier (e.g., 'A1', 'B2') for well-specific correction
+            k_system_override: If set (N/mm), use this value for all wells; bypasses heatmap lookup
             
         Returns:
             Corrected depths (mm)
         """
-        if well is not None:
+        if k_system_override is not None:
+            k_system = k_system_override
+        elif well is not None:
             k_system = self._get_spring_constant_for_well(well)
         else:
             k_system = self.K_SYSTEM
@@ -680,6 +697,7 @@ class IndentationAnalyzer:
         well_bottom_z: float = -85.0,  # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|
         use_legacy_height: bool = False,  # Use original batch script approx_height formula for (b,c) lookup
         legacy_height_step_mm: float = 0.02,  # Step size (mm) for legacy height formula
+        k_system_override: Optional[float] = None,  # If set (N/mm), use this for all wells; bypasses heatmap
     ) -> Optional[AnalysisResult]:
         print(f"\n🔬 Analyzing well {well}...")
         if poisson_ratio is None and filename:
@@ -904,7 +922,9 @@ class IndentationAnalyzer:
                         f_arr = self.correct_force_for_geometry(d_arr, f_arr, poisson_ratio, approx_h)
                     # Apply system compliance
                     if apply_system_correction:
-                        d_corr = self.correct_depth_for_system_compliance(d_arr, f_arr, well=well)
+                        d_corr = self.correct_depth_for_system_compliance(
+                            d_arr, f_arr, well=well, k_system_override=k_system_override
+                        )
                     else:
                         d_corr = d_arr
                     # Fit
@@ -982,8 +1002,13 @@ class IndentationAnalyzer:
                     print(f"📊 Original (uncorrected) E = {original_E} Pa, R² = {original_r2:.3f}")
                 
                 # Apply system compliance correction: d_true = d_measure - force / k_system
-                k_system_used = self._get_spring_constant_for_well(well)
-                d_corrected = self.correct_depth_for_system_compliance(d_arr, f_arr, well=well)
+                if k_system_override is not None:
+                    k_system_used = k_system_override
+                else:
+                    k_system_used = self._get_spring_constant_for_well(well)
+                d_corrected = self.correct_depth_for_system_compliance(
+                    d_arr, f_arr, well=well, k_system_override=k_system_override
+                )
                 print(f"🔧 Applied system compliance correction (k_system = {k_system_used:.2f} N/mm for well {well})")
             else:
                 print("🔬 Using Hertzian fitting (no system compliance correction)")
