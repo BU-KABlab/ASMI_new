@@ -396,86 +396,86 @@ def write_summary_csv(run_folder_name: str, results: list):
     return out_csv
 
 
-def correct_spring_constant_csv(csv_path: str, k_system: float = 64.27, output_path: Optional[str] = None):
-    """
-    Read spring constant CSV and apply system compliance correction to each well.
+# def correct_spring_constant_csv(csv_path: str, k_system: float = 64.27, output_path: Optional[str] = None):
+#     """
+#     Read spring constant CSV and apply system compliance correction to each well.
     
-    For springs in series: 1/k_total = 1/k_system + 1/k_sample
-    Therefore: k_sample = 1 / (1/k_total - 1/k_system)
+#     For springs in series: 1/k_total = 1/k_system + 1/k_sample
+#     Therefore: k_sample = 1 / (1/k_total - 1/k_system)
     
-    Args:
-        csv_path: Path to input CSV file with spring constant data
-        k_system: System spring constant (N/mm), default 64.27
-        output_path: Path to save corrected CSV (if None, appends '_corrected' to input path)
+#     Args:
+#         csv_path: Path to input CSV file with spring constant data
+#         k_system: System spring constant (N/mm), default 64.27
+#         output_path: Path to save corrected CSV (if None, appends '_corrected' to input path)
         
-    Returns:
-        Path to the corrected CSV file
-    """
-    import pandas as pd
+#     Returns:
+#         Path to the corrected CSV file
+#     """
+#     import pandas as pd
     
-    if not os.path.exists(csv_path):
-        print(f"❌ CSV file not found: {csv_path}")
-        return None
+#     if not os.path.exists(csv_path):
+#         print(f"❌ CSV file not found: {csv_path}")
+#         return None
     
-    # Read the CSV
-    df = pd.read_csv(csv_path)
+#     # Read the CSV
+#     df = pd.read_csv(csv_path)
     
-    if 'SpringConstant_k' not in df.columns:
-        print(f"❌ Column 'SpringConstant_k' not found in CSV. Available columns: {df.columns.tolist()}")
-        return None
+#     if 'SpringConstant_k' not in df.columns:
+#         print(f"❌ Column 'SpringConstant_k' not found in CSV. Available columns: {df.columns.tolist()}")
+#         return None
     
-    # Create a copy for corrected values
-    df_corrected = df.copy()
+#     # Create a copy for corrected values
+#     df_corrected = df.copy()
     
-    # Apply correction to each well
-    corrected_values = []
-    for idx, row in df.iterrows():
-        k_measured = row['SpringConstant_k']
+#     # Apply correction to each well
+#     corrected_values = []
+#     for idx, row in df.iterrows():
+#         k_measured = row['SpringConstant_k']
         
-        # Skip empty or invalid values
-        if pd.isna(k_measured) or k_measured == '' or k_measured == 0:
-            corrected_values.append('')
-            continue
+#         # Skip empty or invalid values
+#         if pd.isna(k_measured) or k_measured == '' or k_measured == 0:
+#             corrected_values.append('')
+#             continue
         
-        try:
-            k_measured = float(k_measured)
-            # Correction formula: k_sample = 1 / (1/k_total - 1/k_system)
-            if abs(1/k_measured - 1/k_system) < 1e-10:
-                # Avoid division by zero (k_measured ≈ k_system)
-                print(f"⚠️ Well {row.get('Well', idx)}: k_measured ({k_measured:.3f}) too close to k_system ({k_system:.3f}), skipping correction")
-                corrected_values.append(k_measured)
-            else:
-                k_corrected = 1 / (1/k_measured - 1/k_system)
-                corrected_values.append(k_corrected)
-        except (ValueError, ZeroDivisionError) as e:
-            print(f"⚠️ Error correcting well {row.get('Well', idx)}: {e}")
-            corrected_values.append('')
+#         try:
+#             k_measured = float(k_measured)
+#             # Correction formula: k_sample = 1 / (1/k_total - 1/k_system)
+#             if abs(1/k_measured - 1/k_system) < 1e-10:
+#                 # Avoid division by zero (k_measured ≈ k_system)
+#                 print(f"⚠️ Well {row.get('Well', idx)}: k_measured ({k_measured:.3f}) too close to k_system ({k_system:.3f}), skipping correction")
+#                 corrected_values.append(k_measured)
+#             else:
+#                 k_corrected = 1 / (1/k_measured - 1/k_system)
+#                 corrected_values.append(k_corrected)
+#         except (ValueError, ZeroDivisionError) as e:
+#             print(f"⚠️ Error correcting well {row.get('Well', idx)}: {e}")
+#             corrected_values.append('')
     
-    # Add corrected column
-    df_corrected['SpringConstant_k_Corrected'] = corrected_values
+#     # Add corrected column
+#     df_corrected['SpringConstant_k_Corrected'] = corrected_values
     
-    # Determine output path
-    if output_path is None:
-        base, ext = os.path.splitext(csv_path)
-        output_path = f"{base}_corrected{ext}"
+#     # Determine output path
+#     if output_path is None:
+#         base, ext = os.path.splitext(csv_path)
+#         output_path = f"{base}_corrected{ext}"
     
-    # Save corrected CSV
-    df_corrected.to_csv(output_path, index=False)
-    print(f"💾 Corrected spring constant data saved to: {output_path}")
-    print(f"📊 Applied system compliance correction (k_system = {k_system} N/mm)")
+#     # Save corrected CSV
+#     df_corrected.to_csv(output_path, index=False)
+#     print(f"💾 Corrected spring constant data saved to: {output_path}")
+#     print(f"📊 Applied system compliance correction (k_system = {k_system} N/mm)")
     
-    # Print statistics
-    valid_corrected = [k for k in corrected_values if k != '' and not pd.isna(k)]
-    if valid_corrected:
-        import numpy as np
-        print(f"📊 Statistics for corrected spring constants:")
-        print(f"   Count: {len(valid_corrected)}")
-        print(f"   Mean: {np.mean(valid_corrected):.3f} N/mm")
-        print(f"   Std: {np.std(valid_corrected):.3f} N/mm")
-        print(f"   Min: {np.min(valid_corrected):.3f} N/mm")
-        print(f"   Max: {np.max(valid_corrected):.3f} N/mm")
+#     # Print statistics
+#     valid_corrected = [k for k in corrected_values if k != '' and not pd.isna(k)]
+#     if valid_corrected:
+#         import numpy as np
+#         print(f"📊 Statistics for corrected spring constants:")
+#         print(f"   Count: {len(valid_corrected)}")
+#         print(f"   Mean: {np.mean(valid_corrected):.3f} N/mm")
+#         print(f"   Std: {np.std(valid_corrected):.3f} N/mm")
+#         print(f"   Min: {np.min(valid_corrected):.3f} N/mm")
+#         print(f"   Max: {np.max(valid_corrected):.3f} N/mm")
     
-    return output_path
+#     return output_path
 
 
 def print_linear_statistics(results: list, direction: str = ""):
@@ -931,6 +931,7 @@ def run_main_at_intervals(
     step_size: float = 0.02,
     force_limit: float = 5.0,
     well_top_z: float | None = -9.0,
+    well_bottom_z: float = -85.0,
     generate_heatmap: bool = True,
     start_delay: float = 0.0,
     stop_on_error: bool = False,
@@ -939,26 +940,47 @@ def run_main_at_intervals(
     home_before_measure: bool = True,
     fit_method: str = "hertzian",
     max_depth: float = 0.5,
+    min_depth: float = 0.25,
+    apply_system_correction: bool = True,
+    retrospective_threshold: float | None = None,
+    apply_force_correction: bool = False,
+    iterative_d0_refinement: bool = False,
+    poisson_ratio: float | None = None,
+    use_legacy_height: bool = False,
+    legacy_height_step_mm: float = 0.02,
+    k_system_override: float | None = None,
+    cnc: CNCController | None = None,
+    force_sensor: ForceSensor | None = None,
+    lock_xy_single_spot: bool = False,
+    lock_xy_position: tuple[float, float] | None = None,
 ):
-    """Run main measurement cycles at regular intervals with enhanced error handling and timing.
+    """Run main measurement cycles at regular intervals. Delegates to main() for each cycle.
     
     Args:
-        interval_seconds: Time between cycle starts (seconds)
+        interval_seconds: Time between cycle starts (seconds). Use 3600 for 1 hour.
         cycles: Number of measurement cycles to run
         wells_to_test: List of wells to measure in each cycle
-        contact_method: Contact detection method
-        measure_with_return: Enable return measurements
+        contact_method: Contact detection method ("extrapolation", "retrospective", etc.)
+        measure_with_return: Enable return measurements (up/down)
         z_target: Target indentation depth (mm)
         step_size: Movement step size (mm)
         force_limit: Force limit (N)
         well_top_z: Well top position (mm) or None to use current Z position
+        well_bottom_z: Well bottom Z (mm) for sample height
         generate_heatmap: Generate heatmaps after each cycle
         start_delay: Initial delay before first cycle (seconds)
         stop_on_error: Stop all cycles if one fails (vs continue)
         move_to_pickup: Move to pickup position after each cycle
         pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
         fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
-        max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
+        max_depth: Maximum depth (mm) to use for analysis
+        min_depth: Minimum depth (mm) for Hertzian fit
+        apply_system_correction: Apply system compliance correction
+        retrospective_threshold: Threshold for retrospective contact method
+        apply_force_correction: Apply geometry force correction
+        iterative_d0_refinement: Iterative d0 refinement
+        poisson_ratio: Sample Poisson's ratio
+        k_system_override: Single spring constant (N/mm) for all wells; None = use heatmap
     """
     print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
     print(f"📍 Wells: {wells_to_test}")
@@ -979,7 +1001,6 @@ def run_main_at_intervals(
             cycle_start_time = start_time + i * interval_seconds
             current_time = time.time()
             
-            # Calculate wait time for precise timing
             if current_time < cycle_start_time:
                 wait_time = cycle_start_time - current_time
                 print(f"⏳ Waiting {wait_time:.1f}s before cycle {cycle_num}/{cycles}...")
@@ -991,8 +1012,9 @@ def run_main_at_intervals(
             print(f"{'='*60}")
             
             try:
-                # Run the measurement cycle
                 main(
+                    cnc=cnc,
+                    force_sensor=force_sensor,
                     do_measure=True,
                     home_before_measure=home_before_measure,
                     wells_to_test=wells_to_test,
@@ -1002,11 +1024,23 @@ def run_main_at_intervals(
                     step_size=step_size,
                     force_limit=force_limit,
                     well_top_z=well_top_z,
+                    well_bottom_z=well_bottom_z,
                     generate_heatmap=generate_heatmap,
                     move_to_pickup=move_to_pickup,
                     pickup_position=pickup_position,
                     fit_method=fit_method,
                     max_depth=max_depth,
+                    min_depth=min_depth,
+                    apply_system_correction=apply_system_correction,
+                    retrospective_threshold=retrospective_threshold,
+                    apply_force_correction=apply_force_correction,
+                    iterative_d0_refinement=iterative_d0_refinement,
+                    poisson_ratio=poisson_ratio,
+                    use_legacy_height=use_legacy_height,
+                    legacy_height_step_mm=legacy_height_step_mm,
+                    k_system_override=k_system_override,
+                    lock_xy_single_spot=lock_xy_single_spot,
+                    lock_xy_position=lock_xy_position,
                 )
                 
                 cycle_duration = time.time() - cycle_actual_start
@@ -1112,10 +1146,10 @@ if __name__ == "__main__":
     #      )
     
     # Test all wells
-    # wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
+    wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
     
     # Test wells
-    wells_to_test = ['E5', 'E6', 'E7']
+    # wells_to_test = ['E5', 'E6', 'E7']
     # Choose fitting method:
     # fit_method="hertzian" - Calculate elastic modulus using Hertzian contact mechanics
     # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
@@ -1154,30 +1188,55 @@ if __name__ == "__main__":
     
     
     # Test the materials
-    main(
+    # main(
+    #     cnc=cnc,
+    #     force_sensor=force_sensor,
+    #     do_measure=DO_MEASURE, 
+    #     home_before_measure=True,
+    #     wells_to_test=wells_to_test,
+    #     contact_method="retrospective", # "extrapolation", "retrospective", "simple_threshold", "baseline_threshold"
+    #     retrospective_threshold=0.01, # 0.05N for measuring the materials
+    #     fit_method="hertzian",  # Try "hertzian" for elastic modulus
+    #     measure_with_return=False, # measure with return (up/down)
+    #     move_to_pickup=False, # if True, move to pickup position after measurements
+    #      step_size=0.01, # step size of the measurement (mm)
+    #      z_target=-90.0,
+    #      force_limit=10.0,
+    #      well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
+    #     existing_run_folder="run_741_20260222_150658",
+    #     existing_measured_with_return=False,
+    #     apply_system_correction=True,  # apply system correction (account for the system compliance)
+    #     max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
+    #     min_depth=0.24, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
+    #     poisson_ratio=0.5, # Poisson's ratio for the sample
+    #     apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
+    #     iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
+    #     well_bottom_z=-27.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
+    #     k_system_override=64.27, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
+    #      )
+
+    # Test the materials every 1 hour (run_main_at_intervals always measures; no do_measure/existing_run_folder)
+    run_main_at_intervals(
+        interval_seconds=3600,  # 1 hour between cycles
+        cycles=12,
+        wells_to_test=wells_to_test,
         cnc=cnc,
         force_sensor=force_sensor,
-        do_measure=DO_MEASURE, 
-        home_before_measure=True,
-        wells_to_test=wells_to_test,
-        contact_method="retrospective", # "extrapolation", "retrospective", "simple_threshold", "baseline_threshold"
-        retrospective_threshold=0.01, # 0.05N for measuring the materials
-        fit_method="hertzian",  # Try "hertzian" for elastic modulus
-        measure_with_return=False, # measure with return (up/down)
-        move_to_pickup=False, # if True, move to pickup position after measurements
-         step_size=0.01, # step size of the measurement (mm)
-         z_target=-90.0,
-         force_limit=10.0,
-         well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
-        existing_run_folder="run_774_20260206_133925",
-        existing_measured_with_return=False,
-        apply_system_correction=False,  # apply system correction (account for the system compliance)
-        k_system_override=None,  # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
-        max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
-        min_depth=0.24, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
-        poisson_ratio=0.5, # Poisson's ratio for the sample
-        apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
-        iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
-        well_bottom_z=-27.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
-        k_system_override=64.27, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
-         )
+        contact_method="retrospective",
+        retrospective_threshold=0.01,
+        fit_method="hertzian",
+        measure_with_return=False,
+        move_to_pickup=False,
+        step_size=0.01,
+        z_target=-90.0,
+        force_limit=10.0,
+        well_top_z=-68.0,
+        well_bottom_z=-27.2,
+        apply_system_correction=True,
+        max_depth=0.5,
+        min_depth=0.24,
+        poisson_ratio=0.5,
+        apply_force_correction=True,
+        iterative_d0_refinement=True,
+        k_system_override=64.27,
+    )
