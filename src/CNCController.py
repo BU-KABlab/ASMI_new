@@ -14,6 +14,7 @@ import time
 import csv
 import threading
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import List, Tuple, Optional
 from .version import __version__
@@ -83,8 +84,8 @@ class CNCController:
         self.ser = None
         
         try:
-            # Try to open the specified port
-            self.ser = serial.Serial(self.port, self.baudrate)
+            # Try to open the specified port (timeout prevents readline from blocking forever)
+            self.ser = serial.Serial(self.port, self.baudrate, timeout=2.0, write_timeout=5.0)
             print(f"✅ Connected to CNC on port: {self.port}")
         except (serial.SerialException, FileNotFoundError) as e:
             if auto_detect_port:
@@ -96,7 +97,7 @@ class CNCController:
                     print(f"📍 Found port: {detected_port}")
                     try:
                         self.port = detected_port
-                        self.ser = serial.Serial(self.port, self.baudrate)
+                        self.ser = serial.Serial(self.port, self.baudrate, timeout=2.0, write_timeout=5.0)
                         print(f"✅ Connected to CNC on auto-detected port: {self.port}")
                     except serial.SerialException as e2:
                         print(f"❌ Could not open auto-detected port {detected_port}: {e2}")
@@ -319,6 +320,20 @@ class CNCController:
             print(f"❌ Error during homing: {e}")
             return False
 
+    def try_home_on_recovery(self, timeout_sec: float = 35.0) -> bool:
+        """Attempt home ($H) in a thread with timeout. Use after hardware/communication errors to recover.
+        Returns True if home succeeded, False if timeout or error. Does not block indefinitely."""
+        ex = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(self.home, zero_after=True, timeout=timeout_sec - 5)
+        try:
+            ok = future.result(timeout=timeout_sec)
+            ex.shutdown(wait=True)
+            return bool(ok)
+        except (FuturesTimeoutError, Exception):
+            ex.shutdown(wait=False)
+            print(f"⚠️ Home recovery timed out or failed after {timeout_sec}s")
+            return False
+
 
     def reset_grbl(self):
         """Reset GRBL if it's in an error state"""
@@ -351,16 +366,34 @@ class CNCController:
             return False
 
 
-    def get_current_position(self):
-        "Get the current machine position from GRBL."
-        start_time = time.time()
-        self.ser.reset_input_buffer()
-        self.ser.write(b'?\n')
-        # time.sleep(0.1)
-        response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-        print(f"📡 Raw position response: {response}")
-        end_time = time.time()
-        print(f"Time taken to get current position: {end_time - start_time} seconds")
+    def get_current_position(self, max_retries: int = 3, timeout_sec: float = 5.0):
+        """Get current machine position from GRBL. Uses thread timeout to avoid blocking when CNC is disconnected."""
+        ex = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(self._get_current_position_impl, max_retries)
+        try:
+            result = future.result(timeout=timeout_sec)
+            ex.shutdown(wait=True)
+            if result is not None:
+                print(f"✅ Machine position: X={result[0]}, Y={result[1]}, Z={result[2]}")
+            return result
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)  # Don't wait for stuck thread (e.g. CNC unplugged)
+            print(f"⚠️ get_current_position timed out after {timeout_sec}s (CNC may be disconnected)")
+            return None
+
+    def _get_current_position_impl(self, max_retries: int) -> Optional[list]:
+        """Internal: blocking serial read for position. Run in thread with timeout."""
+        for attempt in range(max_retries):
+            self.ser.reset_input_buffer()
+            self.ser.write(b'?\n')
+            time.sleep(0.02)
+            response = self.ser.readline().decode('utf-8', errors='ignore').strip()
+            if not response and attempt < max_retries - 1:
+                time.sleep(0.1)
+                continue
+            break
+        if not response:
+            return None
         # Check for reset message
         if "Reset to continue" in response:
             print("⚠️ GRBL needs reset. Attempting to reset...")
@@ -397,12 +430,6 @@ class CNCController:
                         wpos = (x - ox, y - oy, z - oz)
                     except Exception:
                         wpos = (x, y, z)
-
-                print(f"✅ Machine position: X={x}, Y={y}, Z={z}")
-                print(f"✅ Work position:    X={wpos[0]}, Y={wpos[1]}, Z={wpos[2]}")
-                end_time = time.time()
-                print(f"Time taken to get current position: {end_time - start_time} seconds")
-                # Return work coordinates so callers operate in the same frame as G-code (after G92)
                 return [wpos[0], wpos[1], wpos[2]]
             
             except Exception as e:

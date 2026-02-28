@@ -44,6 +44,8 @@ def simple_indentation_measurement(
     force_limit: float = 15.0,
     well_top_z: float = -9.0,
     locked_xy: tuple[float, float] | None = None,
+    remeasure_if_first_force_above: float | None = 0.05,
+    well_top_z_remargin_offset: float = 0.5,
 ):
     """Measure force during downward indentation until z_target or force_limit.
 
@@ -58,11 +60,12 @@ def simple_indentation_measurement(
         force_limit: Force limit in N (default: 15.0 N)
         well_top_z: Z position at well top before indentation (default: -9.0 mm)
         locked_xy: Optional (x, y) to lock XY for all wells at well_top_z
+        remeasure_if_first_force_above: If set (N), abort and re-measure when |first_point_force| > this (well_top_z too low). None=disabled.
+        well_top_z_remargin_offset: mm to raise well_top_z when re-measuring (default: 0.5 mm)
 
     Writes CSV with metadata and columns: Timestamp(s), Z_Position(mm), Raw_Force(N), Corrected_Force(N).
     """
     try:
-        # Connectivity
         pos = cnc.get_current_position()
         if not pos:
             print("❌ Could not get current position from CNC")
@@ -71,11 +74,9 @@ def simple_indentation_measurement(
             print("❌ Force sensor not connected")
             return False
 
-        # Baseline
         baseline_avg, baseline_std = force_sensor.get_baseline_force(samples=10)
         print(f"📊 Baseline: {baseline_avg:.3f} ± {baseline_std:.3f} N")
 
-        # Filename
         if filename is None:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             if well is not None:
@@ -93,90 +94,112 @@ def simple_indentation_measurement(
                 filename = os.path.join(run_folder, f"indentation_{ts}.csv")
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
-        # Move to well top position first (optionally lock XY)
-        if well is not None:
-            if locked_xy is not None:
-                try:
-                    # lock_xy: override well XY with fixed coordinates
-                    # 1) raise to safety Z, 2) move XY at safety, 3) go down to well_top_z
-                    print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={well_top_z:.1f}mm for well {well}...")
-                    cnc.move_to_safe_z()
-                    cnc.move_to_x_y(locked_xy[0], locked_xy[1])
-                    cnc.move_to_z(well_top_z, wait_for_idle=True)
-                    print(f"✅ Positioned at locked XY for well {well}")
-                except Exception as e:
-                    print(f"⚠️ Could not move to locked XY for well {well}: {e}")
-                    return False
-            else:
-                col = ''.join([c for c in well if c.isalpha()]).upper()
-                row = ''.join([c for c in well if c.isdigit()])
-                if col and row:
-                    try:
-                        print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
-                        cnc.move_to_well(col, row, z=well_top_z)
-                        print(f"✅ Positioned at well {well} top")
-                    except Exception as e:
-                        print(f"⚠️ Could not move to well {well}: {e}")
-                        return False
-        else: # well is None, so measure at current position
-            print(f"📍 Moving to current position Z={well_top_z:.1f}mm...")
-            cnc.move_to_z(well_top_z)
-            print(f"✅ Positioned at current position")
+        threshold = abs(remeasure_if_first_force_above) if remeasure_if_first_force_above is not None else None
+        current_well_top = well_top_z
+        max_retries = 10
 
-        measurements: list[list[float]] = []
-        data_count = 0
-
-        # Downward loop
-        while True:
-            current = cnc.get_current_position()
-            if not current:
-                print("❌ Could not get position - stopping measurement")
-                break
-            current_z = float(current[2])
-            if current_z <= z_target:
-                print(f"🎯 Reached z_target {z_target:.3f}mm")
-                break
-            next_z = current_z - step_size
-            # Use low feedrate so each step finishes quickly and precisely
-            cnc.move_to_z(next_z, wait_for_idle=True)
-            
-            current = cnc.get_current_position() or (None, None, next_z)
-            force = force_sensor.get_force_reading()
-            corrected = force - baseline_avg
-            data_count += 1
-            t = time.time()
-            measurements.append([t, float(current[2]), force, corrected])
-            # Progress print every 10 steps
-            if data_count % 10 == 0:
-                try:
-                    print(f"📉 Step #{data_count}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
-                except Exception:
-                    pass
-            if abs(corrected) > force_limit:
-                print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
-                break
-
-        # Return to safety height before moving to next well
-        cnc.move_to_safe_z()
-
-        # Write CSV
-        with open(filename, 'w', newline='') as f:
-            w = csv.writer(f)
-            w.writerow(['Test_Time', datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        for retry in range(max_retries):
+            # Move to well top position
             if well is not None:
-                w.writerow(['Well', well])
-            w.writerow(['Target_Z(mm)', f"{z_target:.3f}"])
-            w.writerow(['Step_Size(mm)', f"{step_size:.3f}"])
-            w.writerow(['Force_Limit(N)', f"{force_limit:.1f}"])
-            w.writerow(['Baseline_Force(N)', f"{baseline_avg:.3f}"])
-            w.writerow(['Baseline_Std(N)', f"{baseline_std:.3f}"])
-            w.writerow(['Force_Exceeded', str(bool(measurements and abs(measurements[-1][3]) > force_limit))])
-            w.writerow([])
-            w.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)'])
-            for t, z, rf, cf in measurements:
-                w.writerow([f"{t:.3f}", f"{z:.3f}", f"{rf:.3f}", f"{cf:.3f}"])
-        print(f"💾 Saved {len(measurements)} points to {filename}")
-        return True
+                if locked_xy is not None:
+                    try:
+                        print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={current_well_top:.1f}mm for well {well}...")
+                        cnc.move_to_safe_z()
+                        cnc.move_to_x_y(locked_xy[0], locked_xy[1])
+                        cnc.move_to_z(current_well_top, wait_for_idle=True)
+                        print(f"✅ Positioned at locked XY for well {well}")
+                    except Exception as e:
+                        print(f"⚠️ Could not move to locked XY for well {well}: {e}")
+                        return False
+                else:
+                    col = ''.join([c for c in well if c.isalpha()]).upper()
+                    row = ''.join([c for c in well if c.isdigit()])
+                    if col and row:
+                        try:
+                            print(f"📍 Moving to well {well} at top position Z={current_well_top:.1f}mm...")
+                            cnc.move_to_well(col, row, z=current_well_top)
+                            print(f"✅ Positioned at well {well} top")
+                        except Exception as e:
+                            print(f"⚠️ Could not move to well {well}: {e}")
+                            return False
+            else:
+                print(f"📍 Moving to current position Z={current_well_top:.1f}mm...")
+                cnc.move_to_z(current_well_top)
+                print(f"✅ Positioned at current position")
+
+            measurements: list[list[float]] = []
+            data_count = 0
+            aborted = False
+            position_error = False
+
+            while True:
+                current = cnc.get_current_position()
+                if not current:
+                    print("❌ Could not get position - stopping measurement")
+                    position_error = True
+                    break
+                current_z = float(current[2])
+                if current_z <= z_target:
+                    print(f"🎯 Reached z_target {z_target:.3f}mm")
+                    break
+                next_z = current_z - step_size
+                cnc.move_to_z(next_z, wait_for_idle=True)
+
+                current = cnc.get_current_position() or (None, None, next_z)
+                force = force_sensor.get_force_reading()
+                corrected = force - baseline_avg
+                data_count += 1
+                t = time.time()
+                measurements.append([t, float(current[2]), force, corrected])
+
+                # Early check: first point force too high -> well_top_z too low, abort and retry
+                if data_count == 1 and threshold is not None and abs(corrected) > threshold:
+                    print(f"🔄 First point |force|={abs(corrected):.3f}N > {threshold}N (well_top_z too low), aborting and re-measuring...")
+                    aborted = True
+                    break
+
+                if data_count % 5 == 0:
+                    try:
+                        print(f"📉 Step #{data_count}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                    except Exception:
+                        pass
+                if abs(corrected) > force_limit:
+                    print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
+                    break
+
+            if position_error:
+                print("🔄 Attempting home ($H) for recovery...")
+                if not cnc.try_home_on_recovery():
+                    print("⚠️ Could not home - CNC may be disconnected")
+            else:
+                cnc.move_to_safe_z()
+
+            if aborted:
+                if retry >= max_retries - 1:
+                    print(f"⚠️ Re-measure limit ({max_retries}) reached")
+                    return False
+                current_well_top += well_top_z_remargin_offset
+                print(f"   Retry {retry + 2}/{max_retries} with well_top_z={current_well_top:.1f}mm")
+                continue
+
+            # Write CSV
+            with open(filename, 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(['Test_Time', datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                if well is not None:
+                    w.writerow(['Well', well])
+                w.writerow(['Target_Z(mm)', f"{z_target:.3f}"])
+                w.writerow(['Step_Size(mm)', f"{step_size:.3f}"])
+                w.writerow(['Force_Limit(N)', f"{force_limit:.1f}"])
+                w.writerow(['Baseline_Force(N)', f"{baseline_avg:.3f}"])
+                w.writerow(['Baseline_Std(N)', f"{baseline_std:.3f}"])
+                w.writerow(['Force_Exceeded', str(bool(measurements and abs(measurements[-1][3]) > force_limit))])
+                w.writerow([])
+                w.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)'])
+                for t, z, rf, cf in measurements:
+                    w.writerow([f"{t:.3f}", f"{z:.3f}", f"{rf:.3f}", f"{cf:.3f}"])
+            print(f"💾 Saved {len(measurements)} points to {filename}")
+            return True
     except Exception as e:
         print(f"❌ Error in simple_indentation_measurement: {e}")
         return False
@@ -193,6 +216,8 @@ def simple_indentation_with_return_measurement(
     force_limit: float = 15.0,
     well_top_z: float = -9.0,
     locked_xy: tuple[float, float] | None = None,
+    remeasure_if_first_force_above: float | None = 0.05,
+    well_top_z_remargin_offset: float = 0.5,
 ):
     """Measure during downward and upward (return) movement; include 'Direction' column.
 
@@ -240,111 +265,143 @@ def simple_indentation_with_return_measurement(
                 filename = os.path.join(run_folder, f"indentation_{ts}.csv")
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
-        # Move to well top position first (optionally lock XY)
-        if well is not None:
-            if locked_xy is not None:
-                try:
-                    # lock_xy: override well XY with fixed coordinates
-                    # 1) raise to safety Z, 2) move XY at safety, 3) go down to well_top_z
-                    print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={well_top_z:.1f}mm for well {well}...")
-                    cnc.move_to_safe_z()
-                    cnc.move_to_x_y(locked_xy[0], locked_xy[1])
-                    cnc.move_to_z(well_top_z, wait_for_idle=True)
-                    print(f"✅ Positioned at locked XY for well {well}")
-                except Exception as e:
-                    print(f"⚠️ Could not move to locked XY for well {well}: {e}")
-                    return False
-            else:
-                col = ''.join([c for c in well if c.isalpha()]).upper()
-                row = ''.join([c for c in well if c.isdigit()])
-                if col and row:
+        threshold = abs(remeasure_if_first_force_above) if remeasure_if_first_force_above is not None else None
+        current_well_top = well_top_z
+        max_retries = 10
+
+        for retry in range(max_retries):
+            # Move to well top position
+            if well is not None:
+                if locked_xy is not None:
                     try:
-                        print(f"📍 Moving to well {well} at top position Z={well_top_z:.1f}mm...")
-                        cnc.move_to_well(col, row, z=well_top_z)
-                        print(f"✅ Positioned at well {well} top")
+                        print(f"📍 Locked-XY mode: moving to safety Z, then X={locked_xy[0]:.3f}, Y={locked_xy[1]:.3f}, then Z={current_well_top:.1f}mm for well {well}...")
+                        cnc.move_to_safe_z()
+                        cnc.move_to_x_y(locked_xy[0], locked_xy[1])
+                        cnc.move_to_z(current_well_top, wait_for_idle=True)
+                        print(f"✅ Positioned at locked XY for well {well}")
                     except Exception as e:
-                        print(f"⚠️ Could not move to well {well}: {e}")
+                        print(f"⚠️ Could not move to locked XY for well {well}: {e}")
                         return False
-        else:
-            # For current position measurements, move to well_top_z
-            try:
-                print(f"📍 Moving to well top position Z={well_top_z:.1f}mm...")
-                cnc.move_to_z(well_top_z)
-                print(f"✅ Positioned at well top")
-            except Exception as e:
-                print(f"⚠️ Could not move to well top position: {e}")
+                else:
+                    col = ''.join([c for c in well if c.isalpha()]).upper()
+                    row = ''.join([c for c in well if c.isdigit()])
+                    if col and row:
+                        try:
+                            print(f"📍 Moving to well {well} at top position Z={current_well_top:.1f}mm...")
+                            cnc.move_to_well(col, row, z=current_well_top)
+                            print(f"✅ Positioned at well {well} top")
+                        except Exception as e:
+                            print(f"⚠️ Could not move to well {well}: {e}")
+                            return False
+            else:
+                try:
+                    print(f"📍 Moving to well top position Z={current_well_top:.1f}mm...")
+                    cnc.move_to_z(current_well_top)
+                    print(f"✅ Positioned at well top")
+                except Exception as e:
+                    print(f"⚠️ Could not move to well top position: {e}")
+                    return False
+
+            measurements: list[list[object]] = []
+            aborted = False
+            position_error = False
+
+            # Downward
+            while True:
+                current = cnc.get_current_position()
+                if not current:
+                    print("❌ Could not get position - stopping measurement")
+                    position_error = True
+                    break
+                current_z = float(current[2])
+                if current_z <= z_target:
+                    print(f"🎯 Reached z_target {z_target:.3f}mm")
+                    break
+                next_z = current_z - step_size
+                cnc.move_to_z(next_z, wait_for_idle=True)
+                current = cnc.get_current_position() or (None, None, next_z)
+                force = force_sensor.get_force_reading()
+                corrected = force - baseline_avg
+                t = time.time()
+                measurements.append([t, float(current[2]), force, corrected, 'down'])
+
+                # Early check: first point force too high -> well_top_z too low, abort and retry
+                if len(measurements) == 1 and threshold is not None and abs(corrected) > threshold:
+                    print(f"🔄 First point |force|={abs(corrected):.3f}N > {threshold}N (well_top_z too low), aborting and re-measuring...")
+                    aborted = True
+                    break
+
+                if len(measurements) % 5 == 0:
+                    try:
+                        print(f"📉 Down #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                    except Exception:
+                        pass
+                if abs(corrected) > force_limit:
+                    print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
+                    break
+
+            if aborted:
+                cnc.move_to_safe_z()
+                if retry >= max_retries - 1:
+                    print(f"⚠️ Re-measure limit ({max_retries}) reached")
+                    return False
+                current_well_top += well_top_z_remargin_offset
+                print(f"   Retry {retry + 2}/{max_retries} with well_top_z={current_well_top:.1f}mm")
+                continue
+
+            if position_error:
+                print("🔄 Attempting home ($H) for recovery...")
+                if not cnc.try_home_on_recovery():
+                    print("⚠️ Could not home - CNC may be disconnected")
                 return False
 
-        measurements: list[list[object]] = []
+            # Upward return
+            while True:
+                current = cnc.get_current_position()
+                if not current:
+                    position_error = True
+                    break
+                current_z = float(current[2])
+                if current_z >= current_well_top:
+                    break
+                next_z = min(current_z + step_size, current_well_top)
+                cnc.move_to_z(next_z, wait_for_idle=True)
+                current = cnc.get_current_position() or (None, None, next_z)
+                force = force_sensor.get_force_reading()
+                corrected = force - baseline_avg
+                t = time.time()
+                measurements.append([t, float(current[2]), force, corrected, 'up'])
+                if len(measurements) % 5 == 0:
+                    try:
+                        print(f"📈 Up #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
+                    except Exception:
+                        pass
 
-        # Downward
-        while True:
-            current = cnc.get_current_position()
-            if not current:
-                print("❌ Could not get position - stopping measurement")
-                break
-            current_z = float(current[2])
-            if current_z <= z_target:
-                print(f"🎯 Reached z_target {z_target:.3f}mm")
-                break
-            next_z = current_z - step_size
-            cnc.move_to_z(next_z, wait_for_idle=True)
-            current = cnc.get_current_position() or (None, None, next_z)
-            force = force_sensor.get_force_reading()
-            corrected = force - baseline_avg
-            t = time.time()
-            measurements.append([t, float(current[2]), force, corrected, 'down'])
-            if len(measurements) % 10 == 0:
-                try:
-                    print(f"📉 Down #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
-                except Exception:
-                    pass
-            if abs(corrected) > force_limit:
-                print(f"🛑 Force limit exceeded: {corrected:.3f}N > {force_limit:.1f}N")
-                break
+            if position_error:
+                print("🔄 Attempting home ($H) for recovery...")
+                if not cnc.try_home_on_recovery():
+                    print("⚠️ Could not home - CNC may be disconnected")
+                return False
+            cnc.move_to_safe_z()
 
-        # Upward return
-        while True:
-            current = cnc.get_current_position()
-            if not current:
-                break
-            current_z = float(current[2])
-            if current_z >= well_top_z:
-                break
-            next_z = min(current_z + step_size, well_top_z)
-            cnc.move_to_z(next_z, wait_for_idle=True)
-            current = cnc.get_current_position() or (None, None, next_z)
-            force = force_sensor.get_force_reading()
-            corrected = force - baseline_avg
-            t = time.time()
-            measurements.append([t, float(current[2]), force, corrected, 'up'])
-            if len(measurements) % 10 == 0:
-                try:
-                    print(f"📈 Up #{len(measurements)}: Z={float(current[2]):.3f}mm, F={force:.3f}N, dF={corrected:.3f}N")
-                except Exception:
-                    pass
-
-        # Ensure safety height before moving to next well
-        cnc.move_to_safe_z()
-
-        # Write CSV with Direction column
-        with open(filename, 'w', newline='') as f:
-            w = csv.writer(f)
-            w.writerow(['Test_Time', datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-            if well is not None:
-                w.writerow(['Well', well])
-            w.writerow(['Target_Z(mm)', f"{z_target:.3f}"])
-            w.writerow(['Step_Size(mm)', f"{step_size:.3f}"])
-            w.writerow(['Force_Limit(N)', f"{force_limit:.1f}"])
-            w.writerow(['Baseline_Force(N)', f"{baseline_avg:.3f}"])
-            w.writerow(['Baseline_Std(N)', f"{baseline_std:.3f}"])
-            w.writerow(['Force_Exceeded', str(any(abs(m[3]) > force_limit for m in measurements))])
-            w.writerow([])
-            w.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)', 'Direction'])
-            for t, z, rf, cf, d in measurements:
-                w.writerow([f"{t:.3f}", f"{z:.3f}", f"{rf:.3f}", f"{cf:.3f}", d])
-        print(f"💾 Saved {len(measurements)} points (down+up) to {filename}")
-        return True
+            # Write CSV with Direction column
+            with open(filename, 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow(['Test_Time', datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                if well is not None:
+                    w.writerow(['Well', well])
+                w.writerow(['Target_Z(mm)', f"{z_target:.3f}"])
+                w.writerow(['Step_Size(mm)', f"{step_size:.3f}"])
+                w.writerow(['Force_Limit(N)', f"{force_limit:.1f}"])
+                w.writerow(['Baseline_Force(N)', f"{baseline_avg:.3f}"])
+                w.writerow(['Baseline_Std(N)', f"{baseline_std:.3f}"])
+                w.writerow(['Force_Exceeded', str(any(abs(m[3]) > force_limit for m in measurements))])
+                w.writerow([])
+                w.writerow(['Timestamp(s)', 'Z_Position(mm)', 'Raw_Force(N)', 'Corrected_Force(N)', 'Direction'])
+                for t, z, rf, cf, d in measurements:
+                    w.writerow([f"{t:.3f}", f"{z:.3f}", f"{rf:.3f}", f"{cf:.3f}", d])
+            print(f"💾 Saved {len(measurements)} points (down+up) to {filename}")
+            return True
     except Exception as e:
         print(f"❌ Error in simple_indentation_with_return_measurement: {e}")
         return False

@@ -45,6 +45,7 @@ class AnalysisResult:
     original_fit_quality: Optional[float] = None  # Original R² before system correction
     depth_full: Optional[list] = None  # For plotting: 0 to max_depth (when min_depth > 0)
     forces_full: Optional[list] = None  # For plotting: forces corresponding to depth_full
+    first_measurement_force: Optional[float] = None  # Force (N) at first data point; |value|>threshold => well_top_z too low
 
 
 class IndentationAnalyzer:
@@ -1076,6 +1077,7 @@ class IndentationAnalyzer:
             original_fit_quality=float(round(original_r2, 3)) if apply_system_correction and fit_method.lower() != "linear" and original_r2 is not None else None,
             depth_full=depth_full_list,
             forces_full=forces_full_list,
+            first_measurement_force=float(round(corrected_forces[0], 3)) if corrected_forces else None,
         )
 
         # Optional per-direction subset plots when direction info exists
@@ -1136,6 +1138,7 @@ class IndentationAnalyzer:
                         material_type=material_type,
                         contact_z=float(round(zc, 3)),
                         contact_force=float(round(corrected_forces[first_idx], 3)),
+                        first_measurement_force=float(round(corrected_forces[0], 3)) if corrected_forces else None,
                     )
                     self.plot_results(
                         subset,

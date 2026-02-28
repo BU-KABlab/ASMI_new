@@ -34,6 +34,22 @@ from src.CNCController import CNCController
 from src.ForceSensor import ForceSensor
 
 
+STEP_SIZE_MIN = 0.0025  # Minimum step size (mm) for indentation
+
+
+def get_first_force_from_csv(filepath: str) -> float | None:
+    """Read first data point's Corrected_Force (N) from measurement CSV. Returns None if not found."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) >= 4 and row[0].replace(".", "", 1).replace("-", "", 1).isdigit():
+                    return float(row[3])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def ensure_run_folder(base: str = "results/measurements") -> str:
     """Create and return a new run folder path under base."""
     run_count = get_and_increment_run_count(os.path.join("src", "run_count.txt"))
@@ -235,8 +251,11 @@ def run_measure_analyze_plot(
     use_legacy_height: bool = False,
     legacy_height_step_mm: float = 0.02,
     k_system_override: float | None = None,
+    remeasure_if_first_force_above: float | None = None,
+    well_top_z_remargin_offset: float = 0.5,
 ):
     """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
+    step_size = max(STEP_SIZE_MIN, step_size)
     # Use provided batch run folder or create one if missing
     run_folder = run_folder or ensure_run_folder()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -268,11 +287,13 @@ def run_measure_analyze_plot(
                 well=well,
                 filename=datafile,
                 run_folder=run_folder,
-                z_target=z_target, 
-                step_size=step_size, 
+                z_target=z_target,
+                step_size=step_size,
                 force_limit=force_limit,
-                well_top_z=well_top_z,  # Move to well top before indentation
+                well_top_z=well_top_z,
                 locked_xy=(lock_xy_position if lock_xy_single_spot else None),
+                remeasure_if_first_force_above=remeasure_if_first_force_above,
+                well_top_z_remargin_offset=well_top_z_remargin_offset,
             )
         else:
             ok = simple_indentation_measurement(
@@ -284,8 +305,10 @@ def run_measure_analyze_plot(
                 z_target=z_target,
                 step_size=step_size,
                 force_limit=force_limit,
-                well_top_z=well_top_z,  # Move to well top before indentation
+                well_top_z=well_top_z,
                 locked_xy=(lock_xy_position if lock_xy_single_spot else None),
+                remeasure_if_first_force_above=remeasure_if_first_force_above,
+                well_top_z_remargin_offset=well_top_z_remargin_offset,
             )
         if not ok:
             print("❌ Measurement failed")
@@ -294,7 +317,6 @@ def run_measure_analyze_plot(
         duration_s = time.time() - t0
         print(f"✅ Measurement saved to: {datafile}")
         print(f"⏱️ Total measurement time: {duration_s:.2f} s")
-        # Append total measurement time to CSV metadata
         try:
             with open(datafile, 'a', newline='') as f:
                 writer = csv.writer(f)
@@ -539,6 +561,8 @@ def main(
     use_legacy_height: bool = False,  # Use original batch script approx_height for (b,c) lookup (match original E)
     legacy_height_step_mm: float = 0.02,  # Step size (mm) for legacy height formula; match step_size if measuring
     k_system_override: float | None = None,  # If set (N/mm), use this for all wells; bypasses heatmap lookup
+    remeasure_if_first_force_above: float | None = None,  # If set (N), re-measure wells with |first_measurement_force| > this (well_top_z too low)
+    well_top_z_remargin_offset: float = 0.5,  # mm to raise well_top_z when re-measuring (e.g., -73 -> -72.5)
 ):
     """Parameter-based entry point.
     
@@ -565,6 +589,8 @@ def main(
         iterative_d0_refinement: Iterative d0 refinement until |d0|<0.01 mm (Hertzian only; KABlab legacy)
         poisson_ratio: Sample Poisson's ratio for Hertzian fit (e.g., 0.5 for hydrogel). None = auto-detect from filename.
         k_system_override: If set (N/mm), use this spring constant for all wells; bypasses well-specific heatmap lookup.
+        remeasure_if_first_force_above: If set (N), re-measure wells where |first_measurement_force| > threshold (well_top_z too low, pre-contact).
+        well_top_z_remargin_offset: mm to raise well_top_z when re-measuring (e.g., 0.5 for -73 -> -72.5).
     """
 
 
@@ -648,12 +674,15 @@ def main(
                     use_legacy_height=use_legacy_height,
                     legacy_height_step_mm=legacy_height_step_mm,
                     k_system_override=k_system_override,
+                    remeasure_if_first_force_above=remeasure_if_first_force_above,
+                    well_top_z_remargin_offset=well_top_z_remargin_offset,
                 )
                 if r:
                     if isinstance(r, list):
                         results.extend(r)
                     else:
                         results.append(r)
+
             if not run_folder_name:
                 print("⚠️ No run folder detected; skipping heatmap")
                 return
@@ -953,6 +982,8 @@ def run_main_at_intervals(
     force_sensor: ForceSensor | None = None,
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
+    remeasure_if_first_force_above: float | None = None,
+    well_top_z_remargin_offset: float = 0.5,
 ):
     """Run main measurement cycles at regular intervals. Delegates to main() for each cycle.
     
@@ -1041,6 +1072,8 @@ def run_main_at_intervals(
                     k_system_override=k_system_override,
                     lock_xy_single_spot=lock_xy_single_spot,
                     lock_xy_position=lock_xy_position,
+                    remeasure_if_first_force_above=remeasure_if_first_force_above,
+                    well_top_z_remargin_offset=well_top_z_remargin_offset,
                 )
                 
                 cycle_duration = time.time() - cycle_actual_start
@@ -1148,6 +1181,9 @@ if __name__ == "__main__":
     # Test all wells
     wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
     
+    # Test wells with CV>10% (B3, C7, D3, B10, G5, E4, B11, C9, G8, C12) + G11, G12, H7 (fit never succeeded)
+    # wells_to_test = ['B3', 'C7', 'D3', 'B10', 'G5', 'E4', 'B11', 'C9', 'G8', 'C12', 'G11', 'G12', 'H7']
+    
     # Test wells
     # wells_to_test = ['E5', 'E6', 'E7']
     # Choose fitting method:
@@ -1156,7 +1192,7 @@ if __name__ == "__main__":
     
     # Hardware initialization: Set do_measure=True to initialize hardware, False to analyze existing data only
     # The main() function will automatically initialize hardware if do_measure=True and cnc/force_sensor are None
-    DO_MEASURE = False # Set to False to analyze existing data without hardware
+    DO_MEASURE = True # Set to False to analyze existing data without hardware
     
     cnc = None
     force_sensor = None
@@ -1215,22 +1251,22 @@ if __name__ == "__main__":
     #     k_system_override=64.27, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
     #      )
 
-    # Test the materials every 1 hour (run_main_at_intervals always measures; no do_measure/existing_run_folder)
+    # Test the materials every for multiple cycles
     run_main_at_intervals(
-        interval_seconds=3600,  # 1 hour between cycles
-        cycles=12,
+        interval_seconds=0,  # in seconds between cycles
+        cycles=10, # number of cycles
         wells_to_test=wells_to_test,
         cnc=cnc,
         force_sensor=force_sensor,
         contact_method="retrospective",
-        retrospective_threshold=0.01,
+        retrospective_threshold=0.02,
         fit_method="hertzian",
         measure_with_return=False,
         move_to_pickup=False,
         step_size=0.01,
         z_target=-90.0,
-        force_limit=10.0,
-        well_top_z=-68.0,
+        force_limit=5.0,
+        well_top_z=-73.2,
         well_bottom_z=-27.2,
         apply_system_correction=True,
         max_depth=0.5,
@@ -1239,4 +1275,6 @@ if __name__ == "__main__":
         apply_force_correction=True,
         iterative_d0_refinement=True,
         k_system_override=64.27,
+        remeasure_if_first_force_above=0.05, # if the absolute value of the first measurement force is greater than 0.05 N, re-measure the well with a well_top_z_remargin_offset of 0.3 mm
+        well_top_z_remargin_offset=0.3, # offset to raise the well_top_z when re-measuring (e.g., -72.8 -> -72.5)
     )
