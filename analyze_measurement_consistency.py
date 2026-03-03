@@ -16,26 +16,27 @@ import re
 import sys
 from collections import defaultdict
 
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use("Agg") # use Agg backend for matplotlib to avoid X11 window system
+matplotlib.use("Agg")  # use Agg backend for matplotlib to avoid X11 window system
+
+from src.plot import ASMIPlotter
 
 # Base path for plot folders (relative to script directory)
 PLOTS_BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "plots")
 
 # Edit this list or pass folder names as command-line arguments
 FOLDER_NAMES = [
-    "run_747_20260225_183711",
-    "run_748_20260225_191006",
-    "run_749_20260225_194358",
-    "run_750_20260225_201811",
-    "run_751_20260225_205238",
-    "run_752_20260225_212710",
-    "run_753_20260225_220137",
-    "run_754_20260225_223611",
-    "run_755_20260225_231054",
-    "run_756_20260225_234537",
-    "run_757_20260226_002020"
+    "run_853_20260227_235201",
+    "run_854_20260228_010655",
+    "run_855_20260228_022140",
+    "run_856_20260228_033521",
+    "run_857_20260228_044905",
+    "run_858_20260228_060302",
+    "run_859_20260228_071718",
+    "run_860_20260228_083050",
+    "run_861_20260228_094437"
 ]
 
 # Regex to extract Elastic Modulus from summary (handles "Elastic Modulus: 899074 Pa")
@@ -196,6 +197,49 @@ def main():
     plt.savefig(out_plot, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"📊 Saved: {out_plot}")
+
+    # Scatter plot: each well with multiple points (one per run)
+    fig2, ax2 = plt.subplots(figsize=(14, 6))
+    all_x, all_y, all_colors = [], [], []
+    for i, well in enumerate(wells):
+        values = [e for _, e in data[well]]
+        n_pts = len(values)
+        jitter = np.random.uniform(-0.15, 0.15, n_pts) if n_pts > 1 else np.zeros(n_pts)
+        xs = np.full(n_pts, i) + jitter
+        all_x.extend(xs)
+        all_y.extend(values)
+        all_colors.extend([bar_colors[i]] * n_pts)
+    ax2.scatter(all_x, all_y, c=all_colors, alpha=0.7, s=25, edgecolors="white", linewidths=0.3)
+    ax2.set_xlabel("Well")
+    ax2.set_ylabel("Elastic Modulus (Pa)")
+    ax2.set_title(f"Elastic Modulus by Well – Individual Points (n={n_runs} runs)")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(wells, rotation=90, fontsize=8)
+    ax2.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    out_scatter = os.path.join(PLOTS_BASE, "consistency_scatter.png")
+    plt.savefig(out_scatter, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"📊 Saved: {out_scatter}")
+
+    # Heatmap: use plot.py format (circles, mean ± std, MPa)
+    heatmap_csv = os.path.join(PLOTS_BASE, "consistency_heatmap_src.csv")
+    with open(heatmap_csv, "w", newline="", encoding="utf-8") as f:
+        f.write("Well,ElasticModulus,Std\n")
+        for r in rows:
+            f.write(f"{r['well']},{r['mean_Pa']:.2f},{r['std_Pa']:.2f}\n")
+    plotter = ASMIPlotter(font_size=8)
+    out_heatmap = os.path.join(PLOTS_BASE, "consistency_heatmap.png")
+    plotter.plot_well_heatmap(
+        heatmap_csv,
+        value_col="ElasticModulus",
+        cmap="viridis",
+        annotate=True,
+        save_path=out_heatmap,
+        convert_to_mpa=True,
+        title_suffix=f" (Consistency Mean ± Std, n={n_runs} runs)",
+    )
+    print(f"📊 Saved: {out_heatmap}")
 
     return 0
 
