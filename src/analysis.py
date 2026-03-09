@@ -41,10 +41,19 @@ class AnalysisResult:
     linear_fit_quality: Optional[float] = None
     linear_intercept: Optional[float] = None
     corrected_depths: Optional[list] = None  # For Hertzian fits with system compliance correction
-    original_elastic_modulus: Optional[float] = None  # Original E before system correction
+    original_elastic_modulus: Optional[float] = None  # Original E before system correction (min_depth–max_depth)
     original_fit_quality: Optional[float] = None  # Original R² before system correction
+    original_fit_A: Optional[float] = None  # A for min_depth–max_depth fit, with force correction
+    original_fit_d0: Optional[float] = None  # d0 for min_depth–max_depth fit, with force correction
+    original_uncertainty: Optional[float] = None  # Uncertainty for min_depth–max_depth fit, with force correction
+    elastic_modulus_0_max: Optional[float] = None  # E from 0–max_depth fit, no force correction
+    elastic_modulus_min_max_fc: Optional[float] = None  # E from min_depth–max_depth fit, with force correction
+    fit_A_0_max: Optional[float] = None
+    fit_d0_0_max: Optional[float] = None
+    fit_quality_0_max: Optional[float] = None  # R² for 0–max_depth fit
+    uncertainty_0_max: Optional[float] = None  # Uncertainty for 0–max_depth fit
     depth_full: Optional[list] = None  # For plotting: 0 to max_depth (when min_depth > 0)
-    forces_full: Optional[list] = None  # For plotting: forces corresponding to depth_full
+    forces_full: Optional[list] = None  # For plotting: forces corresponding to depth_full (raw, no force correction)
     first_measurement_force: Optional[float] = None  # Force (N) at first data point; |value|>threshold => well_top_z too low
 
 
@@ -445,13 +454,18 @@ class IndentationAnalyzer:
         if os.path.exists(summary_csv):
             try:
                 df = pd.read_csv(summary_csv)
-                if 'ElasticModulus' in df.columns and 'ElasticModulus_Original' in df.columns:
-                    valid = df.dropna(subset=['ElasticModulus', 'ElasticModulus_Original'])
-                    valid = valid[(valid['ElasticModulus'] > 0) & (valid['ElasticModulus_Original'] > 0)]
+                orig_col = 'ElasticModulus_min_max_fc' if 'ElasticModulus_min_max_fc' in df.columns else 'ElasticModulus_Original'
+                corr_col = 'ElasticModulus_system_corrected' if 'ElasticModulus_system_corrected' in df.columns else 'ElasticModulus'
+                if corr_col in df.columns and orig_col in df.columns:
+                    valid = df.copy()
+                    valid[corr_col] = pd.to_numeric(valid[corr_col], errors='coerce')
+                    valid[orig_col] = pd.to_numeric(valid[orig_col], errors='coerce')
+                    valid = valid.dropna(subset=[corr_col, orig_col])
+                    valid = valid[(valid[corr_col] > 0) & (valid[orig_col] > 0)]
                     
                     if len(valid) > 0:
-                        orig = valid['ElasticModulus_Original'] / 1e6  # Convert to MPa
-                        corr = valid['ElasticModulus'] / 1e6
+                        orig = valid[orig_col] / 1e6  # Convert to MPa
+                        corr = valid[corr_col] / 1e6
                         
                         orig_cv = (np.std(orig) / np.mean(orig) * 100) if np.mean(orig) > 0 else 0
                         corr_cv = (np.std(corr) / np.mean(corr) * 100) if np.mean(corr) > 0 else 0
@@ -845,16 +859,44 @@ class IndentationAnalyzer:
             f_arr = self.correct_force_for_geometry(d_arr, f_arr, poisson_ratio, approx_h)
             print(f"📐 Applied geometry force correction (b, c from simulation lookup)")
 
-        # Full range (0 to d_max) for plotting when min_depth > 0
+        # Full range (0 to d_max) for plotting and 0–max_depth fit (no force correction)
         depth_full_list = None
         forces_full_list = None
+        E_0_max = None
+        fit_A_0_max_val = None
+        fit_d0_0_max_val = None
+        r2_0_max = None
+        uncertainty_0_max_val = None
         if d_min > 0 and len(d_full) > 0 and fit_method.lower() != "linear":
             d_full_arr = np.array(d_full)
-            f_full_arr = np.array(f_full)
-            if apply_force_correction:
-                f_full_arr = self.correct_force_for_geometry(d_full_arr, f_full_arr, poisson_ratio, approx_h)
+            f_full_arr = np.array(f_full)  # Raw, no force correction
             depth_full_list = list(d_full_arr)
             forces_full_list = list(f_full_arr)
+            # Fit 0–max_depth (no force correction, no system correction)
+            if len(d_full_arr) >= 5:
+                lb, ub = [0.0, -0.5], [np.inf, 0.5]
+                fit_0_max = self.fit_hertz_model(d_full_arr, f_full_arr, bounds=(lb, ub))
+                if fit_0_max.params is not None:
+                    fit_A_0_max_val = float(fit_0_max.params[0])
+                    fit_d0_0_max_val = float(fit_0_max.params[1])
+                    E_0_max = round(self.adjust_E(self.find_E(fit_A_0_max_val, poisson_ratio)))
+                    if fit_0_max.covariance is not None:
+                        err0 = np.sqrt(np.diag(fit_0_max.covariance))
+                        uncertainty_0_max_val = round(self.find_E(err0[0], poisson_ratio)) if len(err0) > 0 else 0
+                    else:
+                        uncertainty_0_max_val = 0
+                    mask_0 = d_full_arr > fit_d0_0_max_val
+                    if np.sum(mask_0) > 5:
+                        vd = d_full_arr[mask_0]
+                        vf = f_full_arr[mask_0]
+                        pred = fit_A_0_max_val * (vd - fit_d0_0_max_val) ** 1.5
+                        ss_res = np.sum((vf - pred) ** 2)
+                        ss_tot = np.sum((vf - np.mean(vf)) ** 2)
+                        r2_0_max = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                    else:
+                        r2_0_max = 0
+                    if r2_0_max is not None:
+                        print(f"📊 0–{d_max:.2f} mm fit (no force correction): E = {E_0_max} Pa, R² = {r2_0_max:.3f}")
         
         if fit_method.lower() == "linear":
             # Linear fitting: F = k * d
@@ -887,6 +929,9 @@ class IndentationAnalyzer:
             # Hertzian fitting (default)
             original_E = None
             original_r2 = None
+            A_original = None
+            d0_original = None
+            original_uncertainty_val = None
             fit = None
             fit_A = 0.0
             fit_d0 = 0.0
@@ -978,6 +1023,29 @@ class IndentationAnalyzer:
                     f_arr_final = f_arr.copy()
                     d_in = list(d_arr_final)
                     f_arr = f_arr_final
+                # Fit original (min-max with FC, no system correction) for summary
+                if apply_system_correction and len(d_arr_final) >= 5:
+                    fit_orig_iter = self.fit_hertz_model(d_arr_final, f_arr_final, bounds=([0.0, -0.5], [np.inf, 0.5]))
+                    if fit_orig_iter.params is not None:
+                        A_original = float(fit_orig_iter.params[0])
+                        d0_original = float(fit_orig_iter.params[1])
+                        original_E = round(self.adjust_E(self.find_E(A_original, poisson_ratio)))
+                        mask_orig = d_arr_final > d0_original
+                        if np.sum(mask_orig) > 5:
+                            vd_o = d_arr_final[mask_orig]
+                            vf_o = f_arr_final[mask_orig]
+                            pred_o = A_original * (vd_o - d0_original) ** 1.5
+                            ss_res_o = np.sum((vf_o - pred_o) ** 2)
+                            ss_tot_o = np.sum((vf_o - np.mean(vf_o)) ** 2)
+                            original_r2 = 1 - (ss_res_o / ss_tot_o) if ss_tot_o > 0 else 0
+                        else:
+                            original_r2 = 0
+                        if fit_orig_iter.covariance is not None:
+                            err_o = np.sqrt(np.diag(fit_orig_iter.covariance))
+                            original_uncertainty_val = round(self.find_E(err_o[0], poisson_ratio)) if len(err_o) > 0 else 0
+                        else:
+                            original_uncertainty_val = 0
+                        print(f"📊 Original (min-max FC) E = {original_E} Pa, R² = {original_r2:.3f}")
             elif apply_system_correction:
                 print("🔬 Using Hertzian fitting with system compliance correction")
                 # First, fit original (uncorrected) data to get original E
@@ -1000,6 +1068,11 @@ class IndentationAnalyzer:
                         original_r2 = 1 - (ss_res_orig / ss_tot_orig) if ss_tot_orig > 0 else 0
                     else:
                         original_r2 = 0
+                    if fit_original.covariance is not None:
+                        err_orig = np.sqrt(np.diag(fit_original.covariance))
+                        original_uncertainty_val = round(self.find_E(err_orig[0], poisson_ratio)) if len(err_orig) > 0 else 0
+                    else:
+                        original_uncertainty_val = 0
                     print(f"📊 Original (uncorrected) E = {original_E} Pa, R² = {original_r2:.3f}")
                 
                 # Apply system compliance correction: d_true = d_measure - force / k_system
@@ -1075,6 +1148,15 @@ class IndentationAnalyzer:
             corrected_depths=corrected_depths if fit_method.lower() != "linear" else None,
             original_elastic_modulus=original_E if apply_system_correction and fit_method.lower() != "linear" else None,
             original_fit_quality=float(round(original_r2, 3)) if apply_system_correction and fit_method.lower() != "linear" and original_r2 is not None else None,
+            original_fit_A=A_original if apply_system_correction and fit_method.lower() != "linear" else None,
+            original_fit_d0=d0_original if apply_system_correction and fit_method.lower() != "linear" else None,
+            original_uncertainty=original_uncertainty_val if apply_system_correction and fit_method.lower() != "linear" else None,
+            elastic_modulus_0_max=E_0_max,
+            fit_A_0_max=fit_A_0_max_val,
+            fit_d0_0_max=fit_d0_0_max_val,
+            fit_quality_0_max=float(round(r2_0_max, 3)) if r2_0_max is not None else None,
+            uncertainty_0_max=uncertainty_0_max_val,
+            elastic_modulus_min_max_fc=original_E if apply_system_correction and fit_method.lower() != "linear" and original_E is not None else (E if fit_method.lower() != "linear" else None),
             depth_full=depth_full_list,
             forces_full=forces_full_list,
             first_measurement_force=float(round(corrected_forces[0], 3)) if corrected_forces else None,

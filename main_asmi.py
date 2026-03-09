@@ -386,34 +386,31 @@ def write_summary_csv(run_folder_name: str, results: list):
                     r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
                     w.writerow([well_core.upper(), k_val, b_val, r2_val])
         else:
-            # Check if we have system correction (original E values available)
-            has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
-            if has_system_correction:
-                w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
-                for r in results:
-                    if r:
-                        name_lower = r.well.lower() if getattr(r, 'well', None) else ""
-                        if name_lower.endswith("_down"):
-                            well_core = r.well[: -len("_down")]
-                        elif name_lower.endswith("_up"):
-                            well_core = r.well[: -len("_up")]
-                        else:
-                            well_core = r.well
-                        orig_E = getattr(r, 'original_elastic_modulus', r.elastic_modulus)
-                        orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
-                        w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
-            else:
-                w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-                for r in results:
-                    if r:
-                        name_lower = r.well.lower() if getattr(r, 'well', None) else ""
-                        if name_lower.endswith("_down"):
-                            well_core = r.well[: -len("_down")]
-                        elif name_lower.endswith("_up"):
-                            well_core = r.well[: -len("_up")]
-                        else:
-                            well_core = r.well
-                        w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
+            # Hertzian: include all three E values with their Std and R²
+            w.writerow([
+                "Well",
+                "ElasticModulus_0_max", "Std_0_max", "R2_0_max",
+                "ElasticModulus_min_max_fc", "Std_min_max_fc", "R2_min_max_fc",
+                "ElasticModulus_system_corrected", "Std_system_corrected", "R2_system_corrected",
+            ])
+            for r in results:
+                if r:
+                    name_lower = r.well.lower() if getattr(r, 'well', None) else ""
+                    if name_lower.endswith("_down"):
+                        well_core = r.well[: -len("_down")]
+                    elif name_lower.endswith("_up"):
+                        well_core = r.well[: -len("_up")]
+                    else:
+                        well_core = r.well
+                    E_0 = getattr(r, 'elastic_modulus_0_max', None)
+                    u_0 = getattr(r, 'uncertainty_0_max', None)
+                    r2_0 = getattr(r, 'fit_quality_0_max', None)
+                    E_fc = getattr(r, 'elastic_modulus_min_max_fc', None)
+                    u_fc = getattr(r, 'original_uncertainty', None)
+                    if u_fc is None and E_fc is not None and E_fc == r.elastic_modulus:
+                        u_fc = r.uncertainty
+                    r2_fc = getattr(r, 'original_fit_quality', None) or r.fit_quality
+                    w.writerow([well_core.upper(), E_0 or "", u_0 or "", r2_0 or "", E_fc or "", u_fc or "", r2_fc or "", r.elastic_modulus, r.uncertainty, r.fit_quality])
     print(f"💾 Summary CSV written: {out_csv}")
     return out_csv
 
@@ -536,7 +533,7 @@ def main(
     do_measure: bool = True,
     wells_to_test: list[str] | None = None,
     contact_method: str = "retrospective",
-    existing_run_folder: str | None = None,
+    existing_run_folder: str | list[str] | None = None,
     generate_heatmap: bool = True,
     measure_with_return: bool = False,
     z_target: float = -15.0,
@@ -570,7 +567,7 @@ def main(
         do_measure: Whether to perform measurements (True) or analyze existing data (False)
         wells_to_test: List of wells to measure (e.g., ["A1", "A2", "B1"]) or [None] for current position
         contact_method: Contact detection method ("extrapolation", "retrospective", "simple_threshold", "baseline_threshold")
-        existing_run_folder: Folder name for existing data analysis
+        existing_run_folder: Folder name(s) for existing data analysis. Single str or list of str (e.g. ["run_741_...", "run_860_..."]) when do_measure=False.
         generate_heatmap: Generate heatmaps after measurements
         measure_with_return: Enable return measurements (up/down)
         z_target: Target indentation depth (mm)
@@ -708,227 +705,287 @@ def main(
         if not existing_run_folder:
             print("❌ existing_run_folder must be provided when do_measure=False")
             return
-        run_folder_name = os.path.basename(existing_run_folder.strip(os.sep))
-        run_path = os.path.join("results", "measurements", run_folder_name)
-        if not os.path.isdir(run_path):
-            print(f"❌ Run folder not found: {run_path}")
+        # Support single folder or list of folders
+        folders_to_analyze = [existing_run_folder] if isinstance(existing_run_folder, str) else list(existing_run_folder)
+        if not folders_to_analyze:
+            print("❌ existing_run_folder list is empty")
             return
-        # Analyze all well CSVs
-        for fname in sorted(os.listdir(run_path)):
-            if fname.startswith("well_") and fname.endswith(".csv"):
-                # If data were measured with return, only analyze direction-specific files
-                if existing_measured_with_return and not (fname.endswith("_down.csv") or fname.endswith("_up.csv")):
-                    continue
-                # Parse well name from filename well_<WELL>_*.csv
-                try:
-                    parts = fname.split("_")
-                    well_core = parts[1]
-                    if existing_measured_with_return:
-                        suffix = "_down" if fname.endswith("_down.csv") else ("_up" if fname.endswith("_up.csv") else "")
-                        well_name = f"{well_core}{suffix}"
-                    else:
-                        well_name = well_core
-                except Exception:
-                    continue
-                datafile = os.path.join(run_path, fname)
-                if well_name.lower().endswith("_down"):
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=f"{well_core.upper()}_down",
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                        k_system_override=k_system_override,
-                    )
-                elif well_name.lower().endswith("_up"):
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=f"{well_core.upper()}_up",
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                        k_system_override=k_system_override,
-                    )
-                else:
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=well_core.upper(),
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                        k_system_override=k_system_override,
-                    )
-                if r:
-                    results.append(r)
 
-    if wells_to_test is not None and generate_heatmap and results and run_folder_name:
+        for folder_spec in folders_to_analyze:
+            folder_spec = folder_spec.strip()
+            run_folder_name = os.path.basename(folder_spec.rstrip(os.sep))
+            run_path = folder_spec if os.path.isdir(folder_spec) else os.path.join("results", "measurements", run_folder_name)
+            if not os.path.isdir(run_path):
+                print(f"⚠️ Run folder not found: {run_path}, skipping")
+                continue
+            print(f"\n📂 Analyzing folder: {run_folder_name}")
+            results = []  # Reset results per folder
+            # Analyze all well CSVs
+            for fname in sorted(os.listdir(run_path)):
+                if fname.startswith("well_") and fname.endswith(".csv"):
+                    # If data were measured with return, only analyze direction-specific files
+                    if existing_measured_with_return and not (fname.endswith("_down.csv") or fname.endswith("_up.csv")):
+                        continue
+                    # Parse well name from filename well_<WELL>_*.csv
+                    try:
+                        parts = fname.split("_")
+                        well_core = parts[1]
+                        if existing_measured_with_return:
+                            suffix = "_down" if fname.endswith("_down.csv") else ("_up" if fname.endswith("_up.csv") else "")
+                            well_name = f"{well_core}{suffix}"
+                        else:
+                            well_name = well_core
+                    except Exception:
+                        continue
+                    datafile = os.path.join(run_path, fname)
+                    if well_name.lower().endswith("_down"):
+                        r = analyze_file(
+                            datafile=datafile,
+                            well=f"{well_core.upper()}_down",
+                            contact_method=contact_method,
+                            fit_method=fit_method,
+                            apply_system_correction=apply_system_correction,
+                            retrospective_threshold=retrospective_threshold,
+                            max_depth=max_depth,
+                            min_depth=min_depth,
+                            apply_force_correction=apply_force_correction,
+                            iterative_d0_refinement=iterative_d0_refinement,
+                            well_bottom_z=well_bottom_z,
+                            poisson_ratio=poisson_ratio,
+                            use_legacy_height=use_legacy_height,
+                            legacy_height_step_mm=legacy_height_step_mm,
+                            k_system_override=k_system_override,
+                        )
+                    elif well_name.lower().endswith("_up"):
+                        r = analyze_file(
+                            datafile=datafile,
+                            well=f"{well_core.upper()}_up",
+                            contact_method=contact_method,
+                            fit_method=fit_method,
+                            apply_system_correction=apply_system_correction,
+                            retrospective_threshold=retrospective_threshold,
+                            max_depth=max_depth,
+                            min_depth=min_depth,
+                            apply_force_correction=apply_force_correction,
+                            iterative_d0_refinement=iterative_d0_refinement,
+                            well_bottom_z=well_bottom_z,
+                            poisson_ratio=poisson_ratio,
+                            use_legacy_height=use_legacy_height,
+                            legacy_height_step_mm=legacy_height_step_mm,
+                            k_system_override=k_system_override,
+                        )
+                    else:
+                        r = analyze_file(
+                            datafile=datafile,
+                            well=well_core.upper(),
+                            contact_method=contact_method,
+                            fit_method=fit_method,
+                            apply_system_correction=apply_system_correction,
+                            retrospective_threshold=retrospective_threshold,
+                            max_depth=max_depth,
+                            min_depth=min_depth,
+                            apply_force_correction=apply_force_correction,
+                            iterative_d0_refinement=iterative_d0_refinement,
+                            well_bottom_z=well_bottom_z,
+                            poisson_ratio=poisson_ratio,
+                            use_legacy_height=use_legacy_height,
+                            legacy_height_step_mm=legacy_height_step_mm,
+                            k_system_override=k_system_override,
+                        )
+                    if r:
+                        results.append(r)
+
+            if generate_heatmap and results and run_folder_name:
+                plots_root = os.path.join("results", "plots", run_folder_name)
+                os.makedirs(plots_root, exist_ok=True)
+
+                wants_split_heatmaps = (do_measure and measure_with_return) or (not do_measure and existing_measured_with_return)
+
+                if wants_split_heatmaps:
+                    down_results = [r for r in results if r and r.well and r.well.lower().endswith("_down")]
+                    up_results = [r for r in results if r and r.well and r.well.lower().endswith("_up")]
+
+                    def write_subset(name: str, subset: list):
+                        out_csv = os.path.join(plots_root, f"summary_{name}.csv")
+                        with open(out_csv, "w", newline="") as f:
+                            w = csv.writer(f)
+                            has_linear = any(getattr(r, 'spring_constant', None) is not None for r in subset if r)
+                            if has_linear:
+                                w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
+                                for r in subset:
+                                    if r:
+                                        name_lower = r.well.lower()
+                                        well_core = r.well[: -len("_down")] if name_lower.endswith("_down") else (r.well[: -len("_up")] if name_lower.endswith("_up") else r.well)
+                                        k_val = getattr(r, 'spring_constant', 0)
+                                        b_val = getattr(r, 'linear_intercept', 0)
+                                        r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
+                                        w.writerow([well_core.upper(), k_val, b_val, r2_val])
+                            else:
+                                w.writerow([
+                                    "Well",
+                                    "ElasticModulus_0_max", "Std_0_max", "R2_0_max",
+                                    "ElasticModulus_min_max_fc", "Std_min_max_fc", "R2_min_max_fc",
+                                    "ElasticModulus_system_corrected", "Std_system_corrected", "R2_system_corrected",
+                                ])
+                                for r in subset:
+                                    if r:
+                                        name_lower = r.well.lower()
+                                        well_core = r.well[: -len("_down")] if name_lower.endswith("_down") else (r.well[: -len("_up")] if name_lower.endswith("_up") else r.well)
+                                        E_0 = getattr(r, 'elastic_modulus_0_max', None)
+                                        u_0 = getattr(r, 'uncertainty_0_max', None)
+                                        r2_0 = getattr(r, 'fit_quality_0_max', None)
+                                        E_fc = getattr(r, 'elastic_modulus_min_max_fc', None)
+                                        u_fc = getattr(r, 'original_uncertainty', None)
+                                        if u_fc is None and E_fc is not None and E_fc == r.elastic_modulus:
+                                            u_fc = r.uncertainty
+                                        r2_fc = getattr(r, 'original_fit_quality', None) or r.fit_quality
+                                        w.writerow([well_core.upper(), E_0 or "", u_0 or "", r2_0 or "", E_fc or "", u_fc or "", r2_fc or "", r.elastic_modulus, r.uncertainty, r.fit_quality])
+                        return out_csv
+
+                    if down_results:
+                        down_csv = write_subset("down", down_results)
+                        has_linear = any(getattr(r, 'spring_constant', None) is not None for r in down_results if r)
+                        if has_linear:
+                            plotter.plot_well_heatmap(down_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_down_spring_constant.png"), convert_to_mpa=False)
+                            plotter.plot_well_heatmap(down_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_down_intercept.png"), convert_to_mpa=False)
+                            print_linear_statistics(down_results, "(Down)")
+                        else:
+                            plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_down_0_max.png"))
+                            plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_down_min_max_fc.png"))
+                            plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_down_system_corrected.png"))
+                            has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in down_results if r)
+                            if has_system_correction:
+                                plotter.plot_correction_comparison(down_csv, save_path=os.path.join(plots_root, "correction_comparison_down.png"), convert_to_mpa=True)
+                    if up_results:
+                        up_csv = write_subset("up", up_results)
+                        has_linear = any(getattr(r, 'spring_constant', None) is not None for r in up_results if r)
+                        if has_linear:
+                            plotter.plot_well_heatmap(up_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_up_spring_constant.png"), convert_to_mpa=False)
+                            plotter.plot_well_heatmap(up_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_up_intercept.png"), convert_to_mpa=False)
+                            print_linear_statistics(up_results, "(Up)")
+                        else:
+                            plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_up_0_max.png"))
+                            plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_up_min_max_fc.png"))
+                            plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_up_system_corrected.png"))
+                            has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in up_results if r)
+                            if has_system_correction:
+                                plotter.plot_correction_comparison(up_csv, save_path=os.path.join(plots_root, "correction_comparison_up.png"), convert_to_mpa=True)
+                else:
+                    # Legacy data: generate heatmaps
+                    summary_csv = write_summary_csv(run_folder_name, results)
+                    has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
+                    if has_linear:
+                        plotter.plot_well_heatmap(summary_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_spring_constant.png"), convert_to_mpa=False)
+                        plotter.plot_well_heatmap(summary_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_intercept.png"), convert_to_mpa=False)
+                        print_linear_statistics(results)
+                    else:
+                        plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_0_max.png"))
+                        plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_min_max_fc.png"))
+                        plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_system_corrected.png"))
+                        has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
+                        if has_system_correction:
+                            plotter.plot_correction_comparison(summary_csv, save_path=os.path.join(plots_root, "correction_comparison.png"), convert_to_mpa=True)
+                            try:
+                                tmp_analyzer = IndentationAnalyzer()
+                                diag = tmp_analyzer.diagnose_correction_issue(summary_csv)
+                                if diag.get('scatter_increased'):
+                                    print(f"\n⚠️ WARNING: Scatter increased after correction!")
+                                    print(f"   Original CV: {diag.get('original_cv', 0):.2f}%")
+                                    print(f"   Corrected CV: {diag.get('corrected_cv', 0):.2f}%")
+                                    print(f"   {diag.get('recommendation', 'Check spring constant values in CSV.')}")
+                            except Exception as e:
+                                print(f"⚠️ Could not run correction diagnostics: {e}")
+
+            # Raw data plots for this folder
+            if run_folder_name:
+                try:
+                    tmp_analyzer = IndentationAnalyzer()
+                    tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
+                    tmp_analyzer.plot_raw_force_individual_wells(run_folder_name, save_plot=True)
+                except Exception as e:
+                    print(f"⚠️ Failed to generate raw data plots: {e}")
+
+    # When do_measure=True: generate heatmap and raw plots for the measured run
+    if do_measure and generate_heatmap and results and run_folder_name:
         plots_root = os.path.join("results", "plots", run_folder_name)
         os.makedirs(plots_root, exist_ok=True)
-
-        wants_split_heatmaps = (do_measure and measure_with_return) or (not do_measure and existing_measured_with_return)
-
-        if wants_split_heatmaps:
+        wants_split = measure_with_return
+        if wants_split:
             down_results = [r for r in results if r and r.well and r.well.lower().endswith("_down")]
             up_results = [r for r in results if r and r.well and r.well.lower().endswith("_up")]
-
-            def write_subset(name: str, subset: list):
+            def _write_subset(name: str, subset: list):
                 out_csv = os.path.join(plots_root, f"summary_{name}.csv")
                 with open(out_csv, "w", newline="") as f:
                     w = csv.writer(f)
-                    # Check if we have linear fit results (spring constant) or Hertzian (elastic modulus)
                     has_linear = any(getattr(r, 'spring_constant', None) is not None for r in subset if r)
                     if has_linear:
                         w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
                         for r in subset:
                             if r:
-                                name_lower = r.well.lower()
-                                if name_lower.endswith("_down"):
-                                    well_core = r.well[: -len("_down")]
-                                elif name_lower.endswith("_up"):
-                                    well_core = r.well[: -len("_up")]
-                                else:
-                                    well_core = r.well
-                                k_val = getattr(r, 'spring_constant', 0)
-                                b_val = getattr(r, 'linear_intercept', 0)
-                                r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
-                                w.writerow([well_core.upper(), k_val, b_val, r2_val])
+                                nl = r.well.lower()
+                                wc = r.well[: -len("_down")] if nl.endswith("_down") else (r.well[: -len("_up")] if nl.endswith("_up") else r.well)
+                                w.writerow([wc.upper(), getattr(r, 'spring_constant', 0), getattr(r, 'linear_intercept', 0), getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))])
                     else:
-                        # Check if we have system correction (original E values available)
-                        has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in subset if r)
-                        if has_system_correction:
-                            w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
-                            for r in subset:
-                                if r:
-                                    name_lower = r.well.lower()
-                                    if name_lower.endswith("_down"):
-                                        well_core = r.well[: -len("_down")]
-                                    elif name_lower.endswith("_up"):
-                                        well_core = r.well[: -len("_up")]
-                                    else:
-                                        well_core = r.well
-                                    orig_E = getattr(r, 'original_elastic_modulus', r.elastic_modulus)
-                                    orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
-                                    w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
-                        else:
-                            w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
-                            for r in subset:
-                                if r:
-                                    name_lower = r.well.lower()
-                                    if name_lower.endswith("_down"):
-                                        well_core = r.well[: -len("_down")]
-                                    elif name_lower.endswith("_up"):
-                                        well_core = r.well[: -len("_up")]
-                                    else:
-                                        well_core = r.well
-                                    w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
+                        w.writerow([
+                            "Well",
+                            "ElasticModulus_0_max", "Std_0_max", "R2_0_max",
+                            "ElasticModulus_min_max_fc", "Std_min_max_fc", "R2_min_max_fc",
+                            "ElasticModulus_system_corrected", "Std_system_corrected", "R2_system_corrected",
+                        ])
+                        for r in subset:
+                            if r:
+                                nl = r.well.lower()
+                                wc = r.well[: -len("_down")] if nl.endswith("_down") else (r.well[: -len("_up")] if nl.endswith("_up") else r.well)
+                                E_0 = getattr(r, 'elastic_modulus_0_max', None)
+                                u_0 = getattr(r, 'uncertainty_0_max', None)
+                                r2_0 = getattr(r, 'fit_quality_0_max', None)
+                                E_fc = getattr(r, 'elastic_modulus_min_max_fc', None)
+                                u_fc = getattr(r, 'original_uncertainty', None)
+                                if u_fc is None and E_fc is not None and E_fc == r.elastic_modulus:
+                                    u_fc = r.uncertainty
+                                r2_fc = getattr(r, 'original_fit_quality', None) or r.fit_quality
+                                w.writerow([wc.upper(), E_0 or "", u_0 or "", r2_0 or "", E_fc or "", u_fc or "", r2_fc or "", r.elastic_modulus, r.uncertainty, r.fit_quality])
                 return out_csv
-
             if down_results:
-                down_csv = write_subset("down", down_results)
-                # Check if we have linear fit data
-                has_linear = any(getattr(r, 'spring_constant', None) is not None for r in down_results if r)
-                if has_linear:
-                    # Create heatmaps for spring constant and intercept
-                    plotter.plot_well_heatmap(down_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_down_spring_constant.png"), convert_to_mpa=False)
-                    plotter.plot_well_heatmap(down_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_down_intercept.png"), convert_to_mpa=False)
-                    # Print statistics
+                dc = _write_subset("down", down_results)
+                hl = any(getattr(r, 'spring_constant', None) is not None for r in down_results if r)
+                if hl:
+                    plotter.plot_well_heatmap(dc, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_down_spring_constant.png"), convert_to_mpa=False)
+                    plotter.plot_well_heatmap(dc, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_down_intercept.png"), convert_to_mpa=False)
                     print_linear_statistics(down_results, "(Down)")
                 else:
-                    # Check if we have system correction data
-                    has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in down_results if r)
-                    if has_system_correction:
-                        # Generate two separate heatmaps
-                        plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_down_corrected.png"), title_suffix=" (System Corrected)")
-                        plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_down_original.png"), title_suffix=" (Original)")
-                        # Generate correction comparison plot
-                        plotter.plot_correction_comparison(
-                            down_csv, 
-                            save_path=os.path.join(plots_root, "correction_comparison_down.png"),
-                            convert_to_mpa=True
-                        )
-                    else:
-                        plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
+                    plotter.plot_well_heatmap(dc, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_down_0_max.png"))
+                    plotter.plot_well_heatmap(dc, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_down_min_max_fc.png"))
+                    plotter.plot_well_heatmap(dc, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_down_system_corrected.png"))
+                    if any(getattr(r, 'original_elastic_modulus', None) is not None for r in down_results if r):
+                        plotter.plot_correction_comparison(dc, save_path=os.path.join(plots_root, "correction_comparison_down.png"), convert_to_mpa=True)
             if up_results:
-                up_csv = write_subset("up", up_results)
-                # Check if we have linear fit data
-                has_linear = any(getattr(r, 'spring_constant', None) is not None for r in up_results if r)
-                if has_linear:
-                    # Create heatmaps for spring constant and intercept
-                    plotter.plot_well_heatmap(up_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_up_spring_constant.png"), convert_to_mpa=False)
-                    plotter.plot_well_heatmap(up_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_up_intercept.png"), convert_to_mpa=False)
-                    # Print statistics
+                uc = _write_subset("up", up_results)
+                hl = any(getattr(r, 'spring_constant', None) is not None for r in up_results if r)
+                if hl:
+                    plotter.plot_well_heatmap(uc, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_up_spring_constant.png"), convert_to_mpa=False)
+                    plotter.plot_well_heatmap(uc, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_up_intercept.png"), convert_to_mpa=False)
                     print_linear_statistics(up_results, "(Up)")
                 else:
-                    # Check if we have system correction data
-                    has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in up_results if r)
-                    if has_system_correction:
-                        # Generate two separate heatmaps
-                        plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_up_corrected.png"), title_suffix=" (System Corrected)")
-                        plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_up_original.png"), title_suffix=" (Original)")
-                        # Generate correction comparison plot
-                        plotter.plot_correction_comparison(
-                            up_csv, 
-                            save_path=os.path.join(plots_root, "correction_comparison_up.png"),
-                            convert_to_mpa=True
-                        )
-                    else:
-                        plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
+                    plotter.plot_well_heatmap(uc, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_up_0_max.png"))
+                    plotter.plot_well_heatmap(uc, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_up_min_max_fc.png"))
+                    plotter.plot_well_heatmap(uc, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_up_system_corrected.png"))
+                    if any(getattr(r, 'original_elastic_modulus', None) is not None for r in up_results if r):
+                        plotter.plot_correction_comparison(uc, save_path=os.path.join(plots_root, "correction_comparison_up.png"), convert_to_mpa=True)
         else:
-            # Legacy data: generate heatmaps
             summary_csv = write_summary_csv(run_folder_name, results)
-            # Check if we have linear fit data
-            has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
-            if has_linear:
-                # Create heatmaps for spring constant and intercept
+            hl = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
+            if hl:
                 plotter.plot_well_heatmap(summary_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_spring_constant.png"), convert_to_mpa=False)
                 plotter.plot_well_heatmap(summary_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_intercept.png"), convert_to_mpa=False)
-                # Print statistics
                 print_linear_statistics(results)
             else:
-                # Check if we have system correction data
-                has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
-                if has_system_correction:
-                    # Generate two separate heatmaps
-                    plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_corrected.png"), title_suffix=" (System Corrected)")
-                    plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_original.png"), title_suffix=" (Original)")
-                else:
-                    plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
-                
-                # Generate correction comparison plot if system correction was applied
-                if has_system_correction:
-                    plotter.plot_correction_comparison(
-                        summary_csv, 
-                        save_path=os.path.join(plots_root, "correction_comparison.png"),
-                        convert_to_mpa=True
-                    )
-                    # Run diagnostic to check for correction issues
+                plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_0_max', save_path=os.path.join(plots_root, "well_heatmap_0_max.png"))
+                plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_min_max_fc', save_path=os.path.join(plots_root, "well_heatmap_min_max_fc.png"))
+                plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_system_corrected', save_path=os.path.join(plots_root, "well_heatmap_system_corrected.png"))
+                hsc = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
+                if hsc:
+                    plotter.plot_correction_comparison(summary_csv, save_path=os.path.join(plots_root, "correction_comparison.png"), convert_to_mpa=True)
                     try:
                         tmp_analyzer = IndentationAnalyzer()
                         diag = tmp_analyzer.diagnose_correction_issue(summary_csv)
@@ -939,9 +996,7 @@ def main(
                             print(f"   {diag.get('recommendation', 'Check spring constant values in CSV.')}")
                     except Exception as e:
                         print(f"⚠️ Could not run correction diagnostics: {e}")
-
-    # Also generate raw data plots for the run folder
-    if run_folder_name:
+    if do_measure and run_folder_name:
         try:
             tmp_analyzer = IndentationAnalyzer()
             tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
@@ -1192,7 +1247,7 @@ if __name__ == "__main__":
     
     # Hardware initialization: Set do_measure=True to initialize hardware, False to analyze existing data only
     # The main() function will automatically initialize hardware if do_measure=True and cnc/force_sensor are None
-    DO_MEASURE = True # Set to False to analyze existing data without hardware
+    DO_MEASURE = False # Set to False to analyze existing data without hardware
     
     cnc = None
     force_sensor = None
@@ -1231,7 +1286,7 @@ if __name__ == "__main__":
     #     home_before_measure=True,
     #     wells_to_test=wells_to_test,
     #     contact_method="retrospective", # "extrapolation", "retrospective", "simple_threshold", "baseline_threshold"
-    #     retrospective_threshold=0.01, # 0.05N for measuring the materials
+    #     retrospective_threshold=0.02, # 0.05N for measuring the materials
     #     fit_method="hertzian",  # Try "hertzian" for elastic modulus
     #     measure_with_return=False, # measure with return (up/down)
     #     move_to_pickup=False, # if True, move to pickup position after measurements
@@ -1239,7 +1294,9 @@ if __name__ == "__main__":
     #      z_target=-90.0,
     #      force_limit=10.0,
     #      well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
-    #     existing_run_folder="run_741_20260222_150658",
+    #     existing_run_folder=[
+    #         "run_777_20260303_132601", "run_785_20260304_141602"
+    #     ],  # 853-861 测量分析
     #     existing_measured_with_return=False,
     #     apply_system_correction=True,  # apply system correction (account for the system compliance)
     #     max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
@@ -1247,34 +1304,64 @@ if __name__ == "__main__":
     #     poisson_ratio=0.5, # Poisson's ratio for the sample
     #     apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
     #     iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
-    #     well_bottom_z=-27.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
+    #     well_bottom_z=-84.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
     #     k_system_override=64.27, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
     #      )
 
     # Test the materials every for multiple cycles
-    run_main_at_intervals(
-        interval_seconds=0,  # in seconds between cycles
-        cycles=10, # number of cycles
-        wells_to_test=wells_to_test,
+    # run_main_at_intervals(
+    #     interval_seconds=0,  # in seconds between cycles
+    #     cycles=10, # number of cycles
+    #     wells_to_test=wells_to_test,
+    #     cnc=cnc,
+    #     force_sensor=force_sensor,
+    #     contact_method="retrospective",
+    #     retrospective_threshold=0.02,
+    #     fit_method="hertzian",
+    #     measure_with_return=False,
+    #     move_to_pickup=False,
+    #     step_size=0.01,
+    #     z_target=-90.0,
+    #     force_limit=5.0,
+    #     well_top_z=-73.2,
+    #     well_bottom_z=-84.2,
+    #     apply_system_correction=True,
+    #     max_depth=0.5, 
+    #     min_depth=0.24, 
+    #     poisson_ratio=0.5,
+    #     apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
+    #     iterative_d0_refinement=True,
+    #     k_system_override=64.27,
+    #     remeasure_if_first_force_above=0.05, # if the absolute value of the first measurement force is greater than 0.05 N, re-measure the well with a well_top_z_remargin_offset of 0.3 mm
+    #     well_top_z_remargin_offset=0.3, # offset to raise the well_top_z when re-measuring (e.g., -72.8 -> -72.5)
+    # )
+    
+    # Test for hydrogel on a dried clay sample
+    main(
         cnc=cnc,
         force_sensor=force_sensor,
-        contact_method="retrospective",
-        retrospective_threshold=0.02,
-        fit_method="hertzian",
-        measure_with_return=False,
-        move_to_pickup=False,
-        step_size=0.01,
-        z_target=-90.0,
-        force_limit=5.0,
-        well_top_z=-73.2,
-        well_bottom_z=-27.2,
-        apply_system_correction=True,
-        max_depth=0.5,
-        min_depth=0.24,
-        poisson_ratio=0.5,
-        apply_force_correction=True,
-        iterative_d0_refinement=True,
-        k_system_override=64.27,
-        remeasure_if_first_force_above=0.05, # if the absolute value of the first measurement force is greater than 0.05 N, re-measure the well with a well_top_z_remargin_offset of 0.3 mm
-        well_top_z_remargin_offset=0.3, # offset to raise the well_top_z when re-measuring (e.g., -72.8 -> -72.5)
-    )
+        do_measure=DO_MEASURE, 
+        home_before_measure=True,
+        wells_to_test=wells_to_test,
+        contact_method="retrospective", # "extrapolation", "retrospective", "simple_threshold", "baseline_threshold"
+        retrospective_threshold=0.02, # 0.05N for measuring the materials
+        fit_method="hertzian",  # Try "hertzian" for elastic modulus
+        measure_with_return=False, # measure with return (up/down)
+        move_to_pickup=False, # if True, move to pickup position after measurements
+         step_size=0.01, # step size of the measurement (mm)
+         z_target=-13.95,
+         force_limit=10.0,
+         well_top_z=-13.8, # start point of the measurement (avoid wasting time to move to the top of the material)
+        existing_run_folder=[
+            "run_777_20260303_132601"
+        ], 
+        existing_measured_with_return=False,
+        apply_system_correction=True,  # apply system correction (account for the system compliance)
+        max_depth=0.9, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
+        min_depth=0.00, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
+        poisson_ratio=0.5, # Poisson's ratio for the sample
+        apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
+        iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
+        well_bottom_z=-30, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
+        k_system_override=19.53, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
+         )

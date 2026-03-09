@@ -415,6 +415,8 @@ class ASMIPlotter:
             plt.figure(figsize=(10, 6))
             depths_array = np.array(result.depth_in_range)
             forces_array = np.array(result.adjusted_forces) if forces_avail else np.array([])
+            fit_min = float(result.depth_range[0]) if result.depth_range else (min(result.depth_in_range) if result.depth_in_range else 0)
+            fit_max = float(result.depth_range[1]) if result.depth_range else (max(result.depth_in_range) if result.depth_in_range else 2)
             
             if is_linear:
                 # Linear fit uses direct depths (already from contact), no shift needed
@@ -493,21 +495,28 @@ class ASMIPlotter:
                     fit_depths = np.linspace(0, max_depth, 100)
                     fit_forces = result.fit_A * (fit_depths) ** 1.5
 
-            # Plot extended range (0–min_depth) when depth_full/forces_full available
+            # Plot 0–max_depth data and its Hertzian fit (no force correction) when available
             depth_full = getattr(result, 'depth_full', None)
             forces_full = getattr(result, 'forces_full', None)
+            fit_A_0_max = getattr(result, 'fit_A_0_max', None)
+            fit_d0_0_max = getattr(result, 'fit_d0_0_max', None)
             if not is_linear and depth_full and forces_full and len(depth_full) > 0 and len(forces_full) == len(depth_full):
                 d_full_arr = np.array(depth_full)
                 f_full_arr = np.array(forces_full)
-                # Separate extended (0–min in fit range) from fit range
-                fit_min = min(result.depth_in_range)
-                mask_ext = d_full_arr < fit_min
-                if np.any(mask_ext):
-                    d_ext = d_full_arr[mask_ext]
-                    f_ext = f_full_arr[mask_ext]
-                    shifted_ext = np.maximum(d_ext - result.fit_d0, 0)
-                    plt.scatter(shifted_ext, f_ext, alpha=0.5, s=20, color='gray', 
-                              label=f'Extended (0–{fit_min:.2f} mm)')
+                shifted_full = np.maximum(d_full_arr - (fit_d0_0_max if fit_d0_0_max is not None else result.fit_d0), 0)
+                plt.scatter(shifted_full, f_full_arr, alpha=0.5, s=20, color='gray', 
+                            label=f'0–{fit_max:.2f} mm (no force correction)')
+                if fit_A_0_max is not None and fit_d0_0_max is not None:
+                    max_d_full = float(np.max(d_full_arr)) if d_full_arr.size > 0 else fit_max
+                    x_max = max(0, max_d_full - fit_d0_0_max)
+                    fit_depths_0_max = np.linspace(0, x_max, 100)
+                    fit_forces_0_max = fit_A_0_max * (fit_depths_0_max) ** 1.5
+                    E_0_max = getattr(result, 'elastic_modulus_0_max', None)
+                    r2_0_max = getattr(result, 'fit_quality_0_max', None)
+                    lbl = f'0–{fit_max:.2f} mm fit (no FC): E={E_0_max/1e6:.2f} MPa' if E_0_max else f'0–{fit_max:.2f} mm fit'
+                    if r2_0_max is not None:
+                        lbl += f', R²={r2_0_max:.3f}'
+                    plt.plot(fit_depths_0_max, fit_forces_0_max, '--', color='gray', linewidth=1.5, label=lbl)
             if forces_avail:
                 if is_linear:
                     # For linear fits, plot the actual data points
@@ -518,10 +527,10 @@ class ASMIPlotter:
                     # Plot both original and corrected data when system correction is used
                     if shifted_depths_original.size > 0 and forces_array.size == shifted_depths_original.size:
                         plt.scatter(shifted_depths_original, forces_array, alpha=0.6, s=30, 
-                                  color='blue', label='Original Data (shifted)')
+                                  color='blue', label=f'Original ({fit_min:.2f}–{fit_max:.2f} mm)')
                     if shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
                         plt.scatter(shifted_depths_corrected, forces_array, alpha=0.6, s=40, 
-                                  color='purple', label='System Corrected Data (shifted)')
+                                  color='purple', label=f'System Corrected ({fit_min:.2f}–{fit_max:.2f} mm)')
                 else:
                     # Only plot corrected data when no system correction
                     if shifted_depths_corrected is not None and shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
@@ -601,16 +610,33 @@ class ASMIPlotter:
                     f.write(f"Linear Intercept b: {getattr(result, 'linear_intercept', 0):.3f} N\n")
                     f.write(f"Linear Fit R²: {float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0))):.3f}\n")
                 else:
-                    f.write(f"Elastic Modulus: {result.elastic_modulus} Pa\n")
-                    f.write(f"Uncertainty: ±{result.uncertainty} Pa\n")
+                    f.write(f"Elastic Modulus (system corrected): {result.elastic_modulus} Pa\n")
+                    f.write(f"  Uncertainty: ±{result.uncertainty} Pa, R²={result.fit_quality}, A={result.fit_A:.3f}, d0={result.fit_d0:.3f}\n")
+                    E_0 = getattr(result, 'elastic_modulus_0_max', None)
+                    u_0 = getattr(result, 'uncertainty_0_max', None)
+                    r2_0 = getattr(result, 'fit_quality_0_max', None)
+                    A_0 = getattr(result, 'fit_A_0_max', None)
+                    d0_0 = getattr(result, 'fit_d0_0_max', None)
+                    def _fmt(v, fmt_str=None):
+                        if v is None: return 'N/A'
+                        return f"{v:{fmt_str}}" if fmt_str else str(v)
+                    f.write(f"Elastic Modulus (0–max_depth, no force correction): {_fmt(E_0)}{' Pa' if E_0 is not None else ''}\n")
+                    f.write(f"  Uncertainty: ±{_fmt(u_0)} Pa, R²={_fmt(r2_0, '.3f')}, A={_fmt(A_0, '.3f')}, d0={_fmt(d0_0, '.3f')}\n")
+                    E_fc = getattr(result, 'elastic_modulus_min_max_fc', None)
+                    u_fc = getattr(result, 'original_uncertainty', None)
+                    r2_fc = getattr(result, 'original_fit_quality', None)
+                    A_fc = getattr(result, 'original_fit_A', None)
+                    d0_fc = getattr(result, 'original_fit_d0', None)
+                    if E_fc is not None and u_fc is None and r2_fc is None and A_fc is None:
+                        u_fc, r2_fc, A_fc, d0_fc = result.uncertainty, result.fit_quality, result.fit_A, result.fit_d0
+                    f.write(f"Elastic Modulus (min–max_depth, with force correction): {_fmt(E_fc)}{' Pa' if E_fc is not None else ''}\n")
+                    f.write(f"  Uncertainty: ±{_fmt(u_fc)} Pa, R²={_fmt(r2_fc, '.3f')}, A={_fmt(A_fc, '.3f')}, d0={_fmt(d0_fc, '.3f')}\n")
                 f.write(f"Poisson's Ratio: {result.poisson_ratio}\n")
                 f.write(f"Sample Height: {result.sample_height} mm\n")
                 if is_linear:
                     f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
                 else:
-                    f.write(f"Fit Quality (R²): {result.fit_quality}\n")
                     f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
-                    f.write(f"Fit Parameters: A={result.fit_A:.3f}, d0={result.fit_d0:.3f}\n")
                 f.write(f"Contact Point: Z={result.contact_z:.3f} mm, Force={result.contact_force:.3f} N\n")
                 f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             print(f"💾 Summary saved to: {summary_filename}")
@@ -638,8 +664,11 @@ class ASMIPlotter:
         well_to_idx = {(f"{row}{col}"): (i, j) for i, row in enumerate(ROWS) for j, col in enumerate(COLS)}
 
         df = pd.read_csv(summary_csv)
-        has_r2 = 'R2' in df.columns
-        has_std = 'Std' in df.columns
+        # Pick R2 and Std columns to match value_col
+        r2_col = {'ElasticModulus_system_corrected': 'R2_system_corrected', 'ElasticModulus_min_max_fc': 'R2_min_max_fc', 'ElasticModulus_0_max': 'R2_0_max'}.get(value_col, 'R2')
+        std_col = {'ElasticModulus_system_corrected': 'Std_system_corrected', 'ElasticModulus_min_max_fc': 'Std_min_max_fc', 'ElasticModulus_0_max': 'Std_0_max'}.get(value_col, 'Std')
+        has_r2 = r2_col in df.columns
+        has_std = std_col in df.columns
 
         import numpy as _np
         heatmap = _np.full((8, 12), _np.nan)
@@ -652,17 +681,17 @@ class ASMIPlotter:
             if well in well_to_idx and pd.notnull(value) and not isinstance(value, (pd.Series, _np.ndarray)):
                 i, j = well_to_idx[well]
                 # Convert Pa to MPa for ElasticModulus columns
-                is_elastic_modulus = value_col in ('ElasticModulus', 'ElasticModulus_Original')
+                is_elastic_modulus = value_col in ('ElasticModulus', 'ElasticModulus_Original', 'ElasticModulus_system_corrected', 'ElasticModulus_min_max_fc', 'ElasticModulus_0_max')
                 if convert_to_mpa and is_elastic_modulus:
                     heatmap[i, j] = value / 1e6
                 else:
                     heatmap[i, j] = value
                 if has_r2 and r2map is not None:
-                    r2val = row['R2']
+                    r2val = row[r2_col]
                     if pd.notnull(r2val) and not isinstance(r2val, (pd.Series, _np.ndarray)):
                         r2map[i, j] = r2val
                 if has_std and stdmap is not None:
-                    stdval = row['Std']
+                    stdval = row[std_col]
                     if pd.notnull(stdval) and not isinstance(stdval, (pd.Series, _np.ndarray)):
                         stdmap[i, j] = (stdval / 1e6) if (convert_to_mpa and is_elastic_modulus) else stdval
 
@@ -697,20 +726,26 @@ class ASMIPlotter:
         ax.tick_params(axis='both', which='major', labelsize=fs + 4)
 
         # Determine appropriate title and units based on value column
-        if value_col == 'ElasticModulus':
+        if value_col in ('ElasticModulus', 'ElasticModulus_system_corrected'):
             if convert_to_mpa:
                 title = "96-Well Plate Young's Modulus Heatmap (MPa)"
                 unit_label = "MPa"
             else:
                 title = "96-Well Plate Young's Modulus Heatmap (Pa)"
                 unit_label = "Pa"
-        elif value_col == 'ElasticModulus_Original':
-            # Special handling for original (uncorrected) values
+        elif value_col in ('ElasticModulus_Original', 'ElasticModulus_min_max_fc'):
             if convert_to_mpa:
                 title = "96-Well Plate Young's Modulus Heatmap (MPa) - Original"
                 unit_label = "MPa"
             else:
                 title = "96-Well Plate Young's Modulus Heatmap (Pa) - Original"
+                unit_label = "Pa"
+        elif value_col == 'ElasticModulus_0_max':
+            if convert_to_mpa:
+                title = "96-Well Plate Young's Modulus Heatmap (MPa) - 0-max (no FC)"
+                unit_label = "MPa"
+            else:
+                title = "96-Well Plate Young's Modulus Heatmap (Pa) - 0-max (no FC)"
                 unit_label = "Pa"
         elif value_col == 'SpringConstant_k':
             title = "96-Well Plate Spring Constant Heatmap (N/mm)"
@@ -776,7 +811,7 @@ class ASMIPlotter:
         improves consistency (reduces variance) of elastic modulus values.
         
         Args:
-            summary_csv: Path to summary CSV with ElasticModulus and ElasticModulus_Original columns
+            summary_csv: Path to summary CSV with ElasticModulus_system_corrected and ElasticModulus_min_max_fc columns
             save_path: Path to save the plot (if None, displays plot)
             convert_to_mpa: Convert Pa to MPa for display (default: True)
         """
@@ -790,13 +825,18 @@ class ASMIPlotter:
         df = pd.read_csv(summary_csv)
         
         # Check if we have both original and corrected values
-        if 'ElasticModulus' not in df.columns or 'ElasticModulus_Original' not in df.columns:
-            print(f"❌ CSV must contain both 'ElasticModulus' and 'ElasticModulus_Original' columns")
+        orig_col = 'ElasticModulus_min_max_fc' if 'ElasticModulus_min_max_fc' in df.columns else 'ElasticModulus_Original'
+        corr_col = 'ElasticModulus_system_corrected' if 'ElasticModulus_system_corrected' in df.columns else 'ElasticModulus'
+        if corr_col not in df.columns or orig_col not in df.columns:
+            print(f"❌ CSV must contain both '{corr_col}' and '{orig_col}' columns")
             return
         
         # Filter out empty/invalid values
-        valid_data = df.dropna(subset=['ElasticModulus', 'ElasticModulus_Original'])
-        valid_data = valid_data[(valid_data['ElasticModulus'] > 0) & (valid_data['ElasticModulus_Original'] > 0)]
+        valid_data = df.copy()
+        valid_data[corr_col] = pd.to_numeric(valid_data[corr_col], errors='coerce')
+        valid_data[orig_col] = pd.to_numeric(valid_data[orig_col], errors='coerce')
+        valid_data = valid_data.dropna(subset=[corr_col, orig_col])
+        valid_data = valid_data[(valid_data[corr_col] > 0) & (valid_data[orig_col] > 0)]
         
         if len(valid_data) == 0:
             print(f"❌ No valid data found in CSV")
@@ -804,12 +844,12 @@ class ASMIPlotter:
         
         # Convert to MPa if requested
         if convert_to_mpa:
-            original = valid_data['ElasticModulus_Original'] / 1e6
-            corrected = valid_data['ElasticModulus'] / 1e6
+            original = valid_data[orig_col] / 1e6
+            corrected = valid_data[corr_col] / 1e6
             unit = "MPa"
         else:
-            original = valid_data['ElasticModulus_Original']
-            corrected = valid_data['ElasticModulus']
+            original = valid_data[orig_col]
+            corrected = valid_data[corr_col]
             unit = "Pa"
         
         # Calculate statistics

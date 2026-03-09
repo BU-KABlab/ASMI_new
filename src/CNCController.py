@@ -24,8 +24,8 @@ BAUD_RATE = 115200
 GRBL_PORT = '/dev/cu.usbserial-1130' # can be automatically detected
 
 # === WELL PLATE GEOMETRY ===
-A1_X = -149.0
-A1_Y = -154.5
+A1_X = -49.7
+A1_Y = -236.8
 Z_INITIAL = -50.0 # safety height-
 WELL_SPACING = 9.0
 ROWS = [str(i) for i in range(1, 13)]
@@ -221,9 +221,9 @@ class CNCController:
         if col not in COLS or row not in ROWS:
             raise ValueError(f"Invalid well: {col}{row}")
         
-        x_target = A1_X + (int(row) - 1) * WELL_SPACING
+        x_target = A1_X - (int(row) - 1) * WELL_SPACING
         # Map columns so that A → 0 offset from A1_Y, B → 1 spacing, etc.
-        y_target = A1_Y - (COLS.index(col)) * WELL_SPACING
+        y_target = A1_Y + (COLS.index(col)) * WELL_SPACING
         
         # Move to X,Y at safety height first, then to target Z
         print(f"📍 Moving to well {col}{row}: X={x_target:.3f}, Y={y_target:.3f}")
