@@ -15,6 +15,8 @@ Date: 02/2026
 License: MIT
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import csv
@@ -32,6 +34,7 @@ if _PANDA_CORE_SRC.is_dir() and str(_PANDA_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PANDA_CORE_SRC))
 
 from gantry.gantry import Gantry
+from gantry.offline import OfflineGantry
 from gantry.loader import load_gantry_from_yaml
 from deck import load_deck_from_yaml
 from board.loader import load_board_from_yaml
@@ -51,6 +54,7 @@ _CONFIGS = _PROJECT_ROOT / 'configs'
 _GANTRY_YAML = _CONFIGS / 'gantry' / 'asmi_gantry.yaml'
 _DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
 _BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
+_MOCK_BOARD_YAML = _CONFIGS / 'board' / 'mock_asmi_board.yaml'
 _EXPERIMENT_YAML = _CONFIGS / 'experiment.yaml'
 
 with open(_EXPERIMENT_YAML) as _f:
@@ -73,13 +77,22 @@ def _resolve_well_xy(well_id: str) -> tuple[float, float]:
     return (coord.x, coord.y)
 
 
-def _init_hardware() -> tuple[Gantry, object]:
-    """Load gantry config, create Gantry + Board with ASMI, connect all."""
-    with open(_GANTRY_YAML) as f:
-        gantry_config = yaml.safe_load(f)
-    gantry = Gantry(config=gantry_config)
-    gantry.connect()
-    board = load_board_from_yaml(_BOARD_YAML, gantry)
+def _init_hardware(mock: bool = False) -> tuple:
+    """Load configs and create Gantry + Board with ASMI.
+
+    Args:
+        mock: If True, use OfflineGantry and mock_asmi_board.yaml.
+              No serial connections are opened.
+    """
+    if mock:
+        gantry = OfflineGantry()
+        board = load_board_from_yaml(_MOCK_BOARD_YAML, gantry)
+    else:
+        with open(_GANTRY_YAML) as f:
+            gantry_config = yaml.safe_load(f)
+        gantry = Gantry(config=gantry_config)
+        gantry.connect()
+        board = load_board_from_yaml(_BOARD_YAML, gantry)
     board.connect_instruments()
     asmi = board.instruments["asmi"]
     return gantry, asmi
@@ -932,18 +945,21 @@ def run_main_at_intervals(
 
 
 if __name__ == "__main__":
-    exp = load_experiment()
+    mock_mode = "--mock" in sys.argv
+
+    with open(_EXPERIMENT_YAML) as _ef:
+        exp = yaml.safe_load(_ef)
     m = exp.get('measurement', {})
     w = exp.get('wells', {})
     a = exp.get('analysis', {})
     wf = exp.get('workflow', {})
 
-    do_measure = wf.get('do_measure', False)
+    do_measure = wf.get('do_measure', False) or mock_mode
 
     gantry = None
     asmi = None
     if do_measure:
-        gantry, asmi = _init_hardware()
+        gantry, asmi = _init_hardware(mock=mock_mode)
 
     main(
         gantry=gantry,

@@ -1,0 +1,10 @@
+# ASMI board configuration — mock hardware for dry runs.
+
+instruments:
+  asmi:
+    type: mock_asmi
+    offset_x: 0.0
+    offset_y: 0.0
+    depth: 0.0
+    measurement_height: 0.0
+    default_force: 0.5         # simulated force reading (N)

@@ -1,4 +1,4 @@
-# ASMI board configuration — force sensor instrument.
+# ASMI board configuration — real hardware.
 
 instruments:
   asmi:
@@ -7,3 +7,5 @@ instruments:
     offset_y: 0.0
     depth: 0.0
     measurement_height: 0.0
+    force_threshold: -100      # GoDirect device detection threshold
+    sensor_channels: [1]       # GoDirect sensor channel indices

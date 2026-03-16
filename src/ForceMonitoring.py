@@ -11,6 +11,8 @@ Date: 09/2025
 License: MIT
 """
 
+from __future__ import annotations
+
 import time
 import csv
 import os
