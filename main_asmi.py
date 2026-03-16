@@ -3,10 +3,12 @@
 ASMI v2 runner (parameter-based, no CLI args) - secondary entrypoint
 
 Supports two workflows:
-  1) Measure → Analyze → Plot (default measurement: simple_indentation_measurement)
-  2) Analyze existing data folder → Plot
+  1) Measure -> Analyze -> Plot (default measurement: simple_indentation_measurement)
+  2) Analyze existing data folder -> Plot
 
 Also supports splitting direction-tagged measurements into _down/_up CSVs and per-direction analysis/plots.
+
+Uses PANDA_CORE for gantry control (Gantry) and force sensing (ASMI).
 
 Author: Hongrui Zhang
 Date: 02/2026
@@ -14,13 +16,36 @@ License: MIT
 """
 
 import os
+import sys
 import csv
-from pickle import FALSE
 import time
 from datetime import datetime
 from typing import Optional
 
-from numpy import False_
+import yaml
+
+# ── Load experiment config and set up PANDA_CORE path ─────────────────────
+_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
+
+with open(os.path.join(_CONFIG_DIR, 'experiment.yaml')) as _f:
+    _cfg = yaml.safe_load(_f)
+
+_PANDA_CORE_SRC = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    _cfg.get('paths', {}).get('panda_core_src', '../PANDA_CORE/src'),
+)
+if os.path.isdir(_PANDA_CORE_SRC) and _PANDA_CORE_SRC not in sys.path:
+    sys.path.insert(0, _PANDA_CORE_SRC)
+
+_RESULTS_BASE = _cfg.get('paths', {}).get('results_base', 'results/measurements')
+_PLOTS_BASE = _cfg.get('paths', {}).get('plots_base', 'results/plots')
+_RUN_COUNT_FILE = _cfg.get('paths', {}).get('run_count_file', 'src/run_count.txt')
+_SAFE_Z = _cfg.get('gantry', {}).get('safe_z', -50.0)
+_K_SYSTEM = _cfg.get('system', {}).get('k_system', 64.27)
+
+from gantry.gantry import Gantry
+from instruments.asmi.driver import ASMI
+from deck import load_deck_from_yaml
 
 from src.ForceMonitoring import (
     simple_indentation_measurement,
@@ -30,13 +55,27 @@ from src.ForceMonitoring import (
 from src.analysis import IndentationAnalyzer
 from src.plot import plotter
 from src.version import get_full_version
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
+
+# ── Load deck ─────────────────────────────────────────────────────────────
+_deck_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    _cfg.get('paths', {}).get('deck_yaml', 'config/deck.yaml'),
+)
+_deck = load_deck_from_yaml(_deck_path)
+_plate = _deck["plate"]
 
 
-def ensure_run_folder(base: str = "results/measurements") -> str:
+def _resolve_well_xy(well_id: str) -> tuple[float, float]:
+    """Look up well XY from the deck's well plate."""
+    coord = _plate.get_well_center(well_id)
+    return (coord.x, coord.y)
+
+
+def ensure_run_folder(base: str = None) -> str:
     """Create and return a new run folder path under base."""
-    run_count = get_and_increment_run_count(os.path.join("src", "run_count.txt"))
+    if base is None:
+        base = _RESULTS_BASE
+    run_count = get_and_increment_run_count(_RUN_COUNT_FILE)
     run_date = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_folder = os.path.join(base, f"run_{run_count:03d}_{run_date}")
     os.makedirs(run_folder, exist_ok=True)
@@ -48,7 +87,6 @@ def plot_results_via_plotter(result, run_folder: str | None, method: str | None 
     try:
         plotter.plot_results(result, save_plot=True, run_folder=run_folder, method=method, direction_label=direction_label)
     except TypeError:
-        # Backward compatibility if plotter doesn't accept method/direction_label
         plotter.plot_results(result, save_plot=True, run_folder=run_folder)
 
 
@@ -65,7 +103,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
             reader = _csv.reader(f)
             rows = [r for r in reader if r]
     except Exception as e:
-        print(f"⚠️ Failed to read for splitting: {orig_csv_path}: {e}")
+        print(f"Failed to read for splitting: {orig_csv_path}: {e}")
         return None, None
 
     metadata_rows: list[list[str]] = []
@@ -80,7 +118,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
             metadata_rows.append(r)
 
     if not data_rows:
-        print("⚠️ No data rows to split.")
+        print("No data rows to split.")
         return None, None
 
     down_rows: list[list[str]] = []
@@ -92,7 +130,6 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
         else:
             down_rows.append(r)
 
-    # Sort 'up' by increasing |Z|
     try:
         up_rows.sort(key=lambda r: abs(float(r[1])))
     except Exception:
@@ -122,7 +159,7 @@ def split_up_down_csv(orig_csv_path: str) -> tuple[str | None, str | None]:
         if up_path:
             _write_subset(up_path, up_rows, 'up')
     except Exception as e:
-        print(f"⚠️ Failed to write split files: {e}")
+        print(f"Failed to write split files: {e}")
 
     return down_path, up_path
 
@@ -133,8 +170,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
     analyzer = IndentationAnalyzer(data_dir or ".")
     if not analyzer.load_data(filename):
             return None
-        
-    # Map friendly names → analyzer keys (best-effort if supported)
+
     method_key = {
         "extrapolation": "true_contact",
         "retrospective": "retrospective",
@@ -145,7 +181,7 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
     try:
         result = analyzer.analyze_well(
             well=well,
-            poisson_ratio=poisson_ratio,  # None = auto-detect from file
+            poisson_ratio=poisson_ratio,
             filename=datafile,
             contact_method=method_key,
             fit_method=fit_method,
@@ -160,7 +196,6 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
             legacy_height_step_mm=legacy_height_step_mm,
         )
     except TypeError:
-        # Fall back if analyze_well does not accept contact_method
         result = analyzer.analyze_well(
             well=well,
             poisson_ratio=poisson_ratio,
@@ -178,17 +213,15 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
         )
 
     if not result:
-        print("❌ Analysis failed")
+        print("Analysis failed")
         return None
-        
-    # Derive run_folder from data path for plotting
+
     run_folder = None
     for part in data_dir.split(os.sep):
         if part.startswith("run_"):
             run_folder = part
             break
 
-    # Infer direction from well suffix if present
     dir_label = None
     if well.lower().endswith("_down"):
         dir_label = "down"
@@ -209,8 +242,8 @@ def analyze_file(datafile: str, well: str, contact_method: str = "retrospective"
 
 
 def run_measure_analyze_plot(
-    cnc,
-    force_sensor,
+    gantry,
+    asmi,
     well: str | None,
     contact_method: str,
     measure_with_return: bool = False,
@@ -233,78 +266,60 @@ def run_measure_analyze_plot(
     use_legacy_height: bool = False,
     legacy_height_step_mm: float = 0.02,
 ):
-    """Measure a single well or current position, then analyze and plot (handles split up/down files automatically)."""
-    # Use provided batch run folder or create one if missing
+    """Measure a single well or current position, then analyze and plot."""
     run_folder = run_folder or ensure_run_folder()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Generate filename based on whether well is specified
+
     if well is not None:
         datafile = os.path.join(run_folder, f"well_{well}_{timestamp}.csv")
-        # Positioning is handled inside measurement functions to avoid duplicate XY/Z moves
     else:
         datafile = os.path.join(run_folder, f"indentation_{timestamp}.csv")
-        print(f"📍 Measuring at current position (no well specified)")
+        print(f"Measuring at current position (no well specified)")
 
     # Handle well_top_z=None by using current Z position
     if well_top_z is None:
-        current_pos = cnc.get_current_position()
-        if current_pos:
-            well_top_z = float(current_pos[2])
-            print(f"📍 Using current Z position as well_top_z: {well_top_z:.1f}mm")
-        else:
-            print("⚠️ Could not get current position, using default well_top_z=-9.0mm")
+        try:
+            current_pos = gantry.get_coordinates()
+            well_top_z = float(current_pos["z"])
+            print(f"Using current Z position as well_top_z: {well_top_z:.1f}mm")
+        except Exception:
+            print("Could not get current position, using default well_top_z=-9.0mm")
             well_top_z = -9.0
 
     try:
         t0 = time.time()
+        well_xy = _resolve_well_xy(well) if well is not None else None
+        common = dict(
+            gantry=gantry, asmi=asmi,
+            well=well, well_xy=well_xy, safe_z=_SAFE_Z,
+            filename=datafile, run_folder=run_folder,
+            results_base=_RESULTS_BASE, run_count_file=_RUN_COUNT_FILE,
+            z_target=z_target, step_size=step_size,
+            force_limit=force_limit, well_top_z=well_top_z,
+            locked_xy=(lock_xy_position if lock_xy_single_spot else None),
+        )
         if measure_with_return:
-            ok = simple_indentation_with_return_measurement(
-                cnc=cnc,
-                force_sensor=force_sensor,
-                well=well,
-                filename=datafile,
-                run_folder=run_folder,
-                z_target=z_target, 
-                step_size=step_size, 
-                force_limit=force_limit,
-                well_top_z=well_top_z,  # Move to well top before indentation
-                locked_xy=(lock_xy_position if lock_xy_single_spot else None),
-            )
+            ok = simple_indentation_with_return_measurement(**common)
         else:
-            ok = simple_indentation_measurement(
-                cnc=cnc,
-                force_sensor=force_sensor,
-                well=well,
-                filename=datafile,
-                run_folder=run_folder,
-                z_target=z_target,
-                step_size=step_size,
-                force_limit=force_limit,
-                well_top_z=well_top_z,  # Move to well top before indentation
-                locked_xy=(lock_xy_position if lock_xy_single_spot else None),
-            )
+            ok = simple_indentation_measurement(**common)
         if not ok:
-            print("❌ Measurement failed")
+            print("Measurement failed")
             return None, None
 
         duration_s = time.time() - t0
-        print(f"✅ Measurement saved to: {datafile}")
-        print(f"⏱️ Total measurement time: {duration_s:.2f} s")
-        # Append total measurement time to CSV metadata
+        print(f"Measurement saved to: {datafile}")
+        print(f"Total measurement time: {duration_s:.2f} s")
         try:
             with open(datafile, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Total_Measurement_Time(s)', f"{duration_s:.3f}"])
         except Exception as e:
-            print(f"⚠️ Could not append total time to CSV: {e}")
+            print(f"Could not append total time to CSV: {e}")
 
         per_well_results = []
 
         if measure_with_return:
-            # Split into _down and _up CSVs and analyze each with well suffix
             down_csv, up_csv = split_up_down_csv(datafile)
-            # Generate well names for analysis
             if well is not None:
                 well_down = f"{well}_down"
                 well_up = f"{well}_up"
@@ -320,7 +335,6 @@ def run_measure_analyze_plot(
                 if r_up:
                     per_well_results.append(r_up)
         else:
-            # No return pass: analyze the original file with plain well ID (no _down suffix)
             plain_well = well.upper() if well is not None else "indentation"
             r_single = analyze_file(datafile=datafile, well=plain_well, contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
             if r_single:
@@ -328,27 +342,25 @@ def run_measure_analyze_plot(
 
         return per_well_results, os.path.basename(run_folder)
     except KeyboardInterrupt:
-        print("🛑 Keyboard interrupt received.")
+        print("Keyboard interrupt received.")
         raise
 
 
 def write_summary_csv(run_folder_name: str, results: list):
     """Write summary.csv for heatmap plotting under results/plots/<run_folder_name>/."""
-    plots_root = os.path.join("results", "plots")
+    plots_root = _PLOTS_BASE
     out_dir = os.path.join(plots_root, run_folder_name)
     os.makedirs(out_dir, exist_ok=True)
     out_csv = os.path.join(out_dir, "summary.csv")
-    
-    # Check if we have linear fit results (spring constant) or Hertzian (elastic modulus)
+
     has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
-    
+
     with open(out_csv, "w", newline="") as f:
         w = csv.writer(f)
         if has_linear:
             w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
             for r in results:
                 if r:
-                    # Normalize well IDs: strip _down/_up for heatmap indexing
                     name_lower = r.well.lower() if getattr(r, 'well', None) else ""
                     if name_lower.endswith("_down"):
                         well_core = r.well[: -len("_down")]
@@ -361,7 +373,6 @@ def write_summary_csv(run_folder_name: str, results: list):
                     r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
                     w.writerow([well_core.upper(), k_val, b_val, r2_val])
         else:
-            # Check if we have system correction (original E values available)
             has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
             if has_system_correction:
                 w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
@@ -378,7 +389,7 @@ def write_summary_csv(run_folder_name: str, results: list):
                         orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
                         w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
             else:
-                w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+                w.writerow(["Well", "ElasticModulus", "Std", "R2"])
                 for r in results:
                     if r:
                         name_lower = r.well.lower() if getattr(r, 'well', None) else ""
@@ -389,89 +400,65 @@ def write_summary_csv(run_folder_name: str, results: list):
                         else:
                             well_core = r.well
                         w.writerow([well_core.upper(), r.elastic_modulus, r.uncertainty, r.fit_quality])
-    print(f"💾 Summary CSV written: {out_csv}")
+    print(f"Summary CSV written: {out_csv}")
     return out_csv
 
 
-def correct_spring_constant_csv(csv_path: str, k_system: float = 64.27, output_path: Optional[str] = None):
-    """
-    Read spring constant CSV and apply system compliance correction to each well.
-    
-    For springs in series: 1/k_total = 1/k_system + 1/k_sample
-    Therefore: k_sample = 1 / (1/k_total - 1/k_system)
-    
-    Args:
-        csv_path: Path to input CSV file with spring constant data
-        k_system: System spring constant (N/mm), default 64.27
-        output_path: Path to save corrected CSV (if None, appends '_corrected' to input path)
-        
-    Returns:
-        Path to the corrected CSV file
-    """
+def correct_spring_constant_csv(csv_path: str, k_system: float = None, output_path: Optional[str] = None):
+    if k_system is None:
+        k_system = _K_SYSTEM
+    """Read spring constant CSV and apply system compliance correction."""
     import pandas as pd
-    
+
     if not os.path.exists(csv_path):
-        print(f"❌ CSV file not found: {csv_path}")
+        print(f"CSV file not found: {csv_path}")
         return None
-    
-    # Read the CSV
+
     df = pd.read_csv(csv_path)
-    
+
     if 'SpringConstant_k' not in df.columns:
-        print(f"❌ Column 'SpringConstant_k' not found in CSV. Available columns: {df.columns.tolist()}")
+        print(f"Column 'SpringConstant_k' not found. Available: {df.columns.tolist()}")
         return None
-    
-    # Create a copy for corrected values
+
     df_corrected = df.copy()
-    
-    # Apply correction to each well
+
     corrected_values = []
     for idx, row in df.iterrows():
         k_measured = row['SpringConstant_k']
-        
-        # Skip empty or invalid values
         if pd.isna(k_measured) or k_measured == '' or k_measured == 0:
             corrected_values.append('')
             continue
-        
         try:
             k_measured = float(k_measured)
-            # Correction formula: k_sample = 1 / (1/k_total - 1/k_system)
             if abs(1/k_measured - 1/k_system) < 1e-10:
-                # Avoid division by zero (k_measured ≈ k_system)
-                print(f"⚠️ Well {row.get('Well', idx)}: k_measured ({k_measured:.3f}) too close to k_system ({k_system:.3f}), skipping correction")
+                print(f"Well {row.get('Well', idx)}: k_measured ({k_measured:.3f}) too close to k_system ({k_system:.3f}), skipping")
                 corrected_values.append(k_measured)
             else:
                 k_corrected = 1 / (1/k_measured - 1/k_system)
                 corrected_values.append(k_corrected)
         except (ValueError, ZeroDivisionError) as e:
-            print(f"⚠️ Error correcting well {row.get('Well', idx)}: {e}")
+            print(f"Error correcting well {row.get('Well', idx)}: {e}")
             corrected_values.append('')
-    
-    # Add corrected column
+
     df_corrected['SpringConstant_k_Corrected'] = corrected_values
-    
-    # Determine output path
+
     if output_path is None:
         base, ext = os.path.splitext(csv_path)
         output_path = f"{base}_corrected{ext}"
-    
-    # Save corrected CSV
+
     df_corrected.to_csv(output_path, index=False)
-    print(f"💾 Corrected spring constant data saved to: {output_path}")
-    print(f"📊 Applied system compliance correction (k_system = {k_system} N/mm)")
-    
-    # Print statistics
+    print(f"Corrected spring constant data saved to: {output_path}")
+
     valid_corrected = [k for k in corrected_values if k != '' and not pd.isna(k)]
     if valid_corrected:
         import numpy as np
-        print(f"📊 Statistics for corrected spring constants:")
+        print(f"Statistics for corrected spring constants:")
         print(f"   Count: {len(valid_corrected)}")
         print(f"   Mean: {np.mean(valid_corrected):.3f} N/mm")
         print(f"   Std: {np.std(valid_corrected):.3f} N/mm")
         print(f"   Min: {np.min(valid_corrected):.3f} N/mm")
         print(f"   Max: {np.max(valid_corrected):.3f} N/mm")
-    
+
     return output_path
 
 
@@ -480,11 +467,11 @@ def print_linear_statistics(results: list, direction: str = ""):
     linear_results = [r for r in results if r and getattr(r, 'spring_constant', None) is not None]
     if not linear_results:
         return
-    
+
     k_values = [getattr(r, 'spring_constant', 0) for r in linear_results]
     b_values = [getattr(r, 'linear_intercept', 0) for r in linear_results]
     r2_values = [getattr(r, 'linear_fit_quality', 0) for r in linear_results]
-    
+
     if k_values:
         k_mean = sum(k_values) / len(k_values)
         k_std = (sum((k - k_mean) ** 2 for k in k_values) / len(k_values)) ** 0.5
@@ -492,11 +479,11 @@ def print_linear_statistics(results: list, direction: str = ""):
         b_std = (sum((b - b_mean) ** 2 for b in b_values) / len(b_values)) ** 0.5
         r2_mean = sum(r2_values) / len(r2_values)
         r2_std = (sum((r2 - r2_mean) ** 2 for r2 in r2_values) / len(r2_values)) ** 0.5
-        
-        print(f"\n📊 Linear Fit Statistics {direction}:")
-        print(f"   Spring Constant k: {k_mean:.3f} ± {k_std:.3f} N/mm (n={len(k_values)})")
-        print(f"   Intercept b: {b_mean:.3f} ± {b_std:.3f} N (n={len(b_values)})")
-        print(f"   R² Quality: {r2_mean:.3f} ± {r2_std:.3f} (n={len(r2_values)})")
+
+        print(f"\nLinear Fit Statistics {direction}:")
+        print(f"   Spring Constant k: {k_mean:.3f} +/- {k_std:.3f} N/mm (n={len(k_values)})")
+        print(f"   Intercept b: {b_mean:.3f} +/- {b_std:.3f} N (n={len(b_values)})")
+        print(f"   R2 Quality: {r2_mean:.3f} +/- {r2_std:.3f} (n={len(r2_values)})")
 
 
 def print_version():
@@ -504,10 +491,24 @@ def print_version():
     print(get_full_version())
 
 
+def _init_gantry() -> Gantry:
+    """Create, connect, and return a PANDA_CORE Gantry instance."""
+    gantry = Gantry()
+    gantry.connect()
+    return gantry
+
+
+def _init_asmi() -> ASMI:
+    """Create, connect, and return a PANDA_CORE ASMI instance."""
+    asmi = ASMI()
+    asmi.connect()
+    return asmi
+
+
 def main(
     home_before_measure: bool = True,
-    cnc: CNCController | None = None,
-    force_sensor: ForceSensor | None = None,
+    gantry: Gantry | None = None,
+    asmi: ASMI | None = None,
     do_measure: bool = True,
     wells_to_test: list[str] | None = None,
     contact_method: str = "retrospective",
@@ -518,50 +519,47 @@ def main(
     step_size: float = 0.02,
     force_limit: float = 5.0,
     well_top_z: float | None = -9.0,
-    well_bottom_z: float = -85.0,  # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|
+    well_bottom_z: float = -85.0,
     existing_measured_with_return: bool = True,
     show_version: bool = False,
     move_to_pickup: bool = False,
     pickup_position: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    fit_method: str = "hertzian",  # "hertzian" or "linear"
+    fit_method: str = "hertzian",
     apply_system_correction: bool = True,
     retrospective_threshold: float | None = None,
     lock_xy_single_spot: bool = False,
     lock_xy_position: tuple[float, float] | None = None,
-    max_depth: float = 0.5,  # Maximum depth (mm) to use for analysis (default: 0.5 mm)
-    min_depth: float = 0.25,  # Minimum depth (mm); 0 = full range, 0.25 = legacy 0.25–0.5 mm
-    apply_force_correction: bool = False,  # Apply geometry correction (KABlab legacy) before Hertzian fit
-    iterative_d0_refinement: bool = False,  # iterative d0 refinement until |d0|<0.01 mm
-    poisson_ratio: float | None = None,  # Sample Poisson's ratio; None = auto-detect from filename
-    use_legacy_height: bool = False,  # Use original batch script approx_height for (b,c) lookup (match original E)
-    legacy_height_step_mm: float = 0.02,  # Step size (mm) for legacy height formula; match step_size if measuring
+    max_depth: float = 0.5,
+    min_depth: float = 0.25,
+    apply_force_correction: bool = False,
+    iterative_d0_refinement: bool = False,
+    poisson_ratio: float | None = None,
+    use_legacy_height: bool = False,
+    legacy_height_step_mm: float = 0.02,
 ):
     """Parameter-based entry point.
-    
-    Args:
-        do_measure: Whether to perform measurements (True) or analyze existing data (False)
-        wells_to_test: List of wells to measure (e.g., ["A1", "A2", "B1"]) or [None] for current position
-        contact_method: Contact detection method ("extrapolation", "retrospective", "simple_threshold", "baseline_threshold")
-        existing_run_folder: Folder name for existing data analysis
-        generate_heatmap: Generate heatmaps after measurements
-        measure_with_return: Enable return measurements (up/down)
-        z_target: Target indentation depth (mm)
-        step_size: Movement step size (mm)
-        force_limit: Force limit (N)
-        well_top_z: Well top position before indentation (mm) or None to use current Z position
-        well_bottom_z: Well bottom Z (mm); sample height = |contact_z - well_bottom_z| (default: -85)
-        existing_measured_with_return: Whether existing data has return measurements
-        show_version: Display version information and exit
-        move_to_pickup: Move to pickup position after measurements
-        pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
-        fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
-        max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
-        min_depth: Minimum depth (mm) for Hertzian fit only; 0 = full range, 0.25 = legacy 0.25–0.5 mm. Linear always uses 0–max_depth.
-        apply_force_correction: Apply geometry-based force correction (F/(c*d^b)) before Hertzian fit only (KABlab legacy)
-        iterative_d0_refinement: Iterative d0 refinement until |d0|<0.01 mm (Hertzian only; KABlab legacy)
-        poisson_ratio: Sample Poisson's ratio for Hertzian fit (e.g., 0.5 for hydrogel). None = auto-detect from filename.
-    """
 
+    Args:
+        gantry: PANDA_CORE Gantry instance (auto-created if None and do_measure=True).
+        asmi: PANDA_CORE ASMI instrument instance (auto-created if None and do_measure=True).
+        do_measure: Whether to perform measurements (True) or analyze existing data (False).
+        wells_to_test: List of wells to measure (e.g., ["A1", "A2"]) or [None] for current position.
+        contact_method: Contact detection method.
+        existing_run_folder: Folder name for existing data analysis.
+        generate_heatmap: Generate heatmaps after measurements.
+        measure_with_return: Enable return measurements (up/down).
+        z_target: Target indentation depth (mm).
+        step_size: Movement step size (mm).
+        force_limit: Force limit (N).
+        well_top_z: Well top position before indentation (mm) or None to use current Z.
+        well_bottom_z: Well bottom Z (mm); sample height = |contact_z - well_bottom_z|.
+        fit_method: Fitting method ("hertzian" or "linear").
+        max_depth: Maximum depth (mm) for analysis.
+        min_depth: Minimum depth (mm) for Hertzian fit.
+        apply_force_correction: Apply geometry-based force correction before Hertzian fit.
+        iterative_d0_refinement: Iterative d0 refinement until |d0|<0.01 mm.
+        poisson_ratio: Sample Poisson's ratio (None = auto-detect).
+    """
 
     if show_version:
         print_version()
@@ -571,56 +569,47 @@ def main(
     run_folder_name = None
 
     if do_measure:
-        # Ensure controllers exist
-        if cnc is None:
-            cnc = CNCController()
-        # Unlock once at the start of the run, then home the CNC
-        try:
-            cnc.unlock()
-        except Exception as e:
-            print(f"⚠️ Unlock failed: {e}")
-        # Home the CNC first
-        try:
-            if home_before_measure and not cnc.home(zero_after=True):
-                print("⚠️ Homing failed or timed out, attempting position sync...")
-                cnc.sync_position()
-        except Exception as e:
-            print(f"⚠️ Homing error: {e}. Proceeding with caution.")
-        if force_sensor is None:
-            force_sensor = ForceSensor()
+        # Ensure hardware is initialized
+        if gantry is None:
+            gantry = _init_gantry()
+        if asmi is None:
+            asmi = _init_asmi()
 
-        # Build iteration list: measure at current position if no wells provided
+        # Unlock and home
+        try:
+            gantry.unlock()
+        except Exception as e:
+            print(f"Unlock failed: {e}")
+        try:
+            if home_before_measure:
+                gantry.home()
+        except Exception as e:
+            print(f"Homing error: {e}. Proceeding with caution.")
+
+        # Build iteration list
         wells_iter = wells_to_test if wells_to_test is not None else [None]
 
-        # Resolve locked XY position once per run if requested
+        # Resolve locked XY position once per run
         resolved_locked_xy: tuple[float, float] | None = None
         if lock_xy_single_spot:
             if lock_xy_position is not None:
                 resolved_locked_xy = (float(lock_xy_position[0]), float(lock_xy_position[1]))
             else:
                 try:
-                    pos0 = cnc.get_current_position()
-                    if pos0:
-                        resolved_locked_xy = (float(pos0[0]), float(pos0[1]))
-                        print(f"🔒 Lock-XY mode enabled: using current XY X={resolved_locked_xy[0]:.3f}, Y={resolved_locked_xy[1]:.3f}")
-                    else:
-                        print("⚠️ Could not read current position to lock XY; disabling lock_xy_single_spot for this run")
-                        lock_xy_single_spot = False
+                    pos0 = gantry.get_coordinates()
+                    resolved_locked_xy = (float(pos0["x"]), float(pos0["y"]))
+                    print(f"Lock-XY mode enabled: X={resolved_locked_xy[0]:.3f}, Y={resolved_locked_xy[1]:.3f}")
                 except Exception as e:
-                    print(f"⚠️ Error determining locked XY: {e}")
+                    print(f"Error determining locked XY: {e}")
                     lock_xy_single_spot = False
 
         # Measure the wells
         try:
-            # move to the well top position
-            # cnc.move_to_z(well_top_z)
-            # cnc.wait_for_idle()
             for w in wells_iter:
-                # Handle None well (current position measurement)
                 well_param = w.upper() if w is not None else None
                 r, run_folder_name = run_measure_analyze_plot(
-                    cnc=cnc,
-                    force_sensor=force_sensor,
+                    gantry=gantry,
+                    asmi=asmi,
                     well=well_param,
                     contact_method=contact_method,
                     measure_with_return=measure_with_return,
@@ -628,7 +617,7 @@ def main(
                     step_size=step_size,
                     force_limit=force_limit,
                     well_top_z=well_top_z,
-                    run_folder=os.path.join("results", "measurements", run_folder_name) if run_folder_name else None,
+                    run_folder=os.path.join(_RESULTS_BASE, run_folder_name) if run_folder_name else None,
                     fit_method=fit_method,
                     apply_system_correction=apply_system_correction,
                     retrospective_threshold=retrospective_threshold,
@@ -649,42 +638,39 @@ def main(
                     else:
                         results.append(r)
             if not run_folder_name:
-                print("⚠️ No run folder detected; skipping heatmap")
+                print("No run folder detected; skipping heatmap")
                 return
         finally:
-            # Move to pickup position at the end of the measurements if requested, otherwise home
+            # End-of-run positioning
             try:
                 if move_to_pickup:
-                    print(f"🎯 Moving to pickup position: {pickup_position}")
-                    # Use the existing pickup method for Y position, then move to X,Z if needed
-                    cnc.move_to_pickup_position(pickup_position=pickup_position)
-                    print(f"✅ Positioned at pickup location: X={pickup_position[0]:.1f}, Y={pickup_position[1]:.1f}, Z={pickup_position[2]:.1f}")
+                    print(f"Moving to pickup position: {pickup_position}")
+                    coords = gantry.get_coordinates()
+                    gantry.move_to(coords["x"], coords["y"], _SAFE_Z)
+                    gantry.move_to(pickup_position[0], pickup_position[1],
+                                   pickup_position[2])
+                    print(f"Positioned at pickup location")
                 else:
-                    cnc.home(zero_after=True)
+                    gantry.home()
             except Exception as e:
-                print(f"⚠️ Error moving to final position: {e}")
-                # Fallback to homing if pickup movement fails
+                print(f"Error moving to final position: {e}")
                 try:
-                    print("🔄 Attempting to home as fallback...")
-                    cnc.home(zero_after=True)
+                    gantry.home()
                 except Exception as e2:
-                    print(f"⚠️ Homing fallback also failed: {e2}")
+                    print(f"Homing fallback also failed: {e2}")
     else:
         if not existing_run_folder:
-            print("❌ existing_run_folder must be provided when do_measure=False")
+            print("existing_run_folder must be provided when do_measure=False")
             return
         run_folder_name = os.path.basename(existing_run_folder.strip(os.sep))
-        run_path = os.path.join("results", "measurements", run_folder_name)
+        run_path = os.path.join(_RESULTS_BASE, run_folder_name)
         if not os.path.isdir(run_path):
-            print(f"❌ Run folder not found: {run_path}")
+            print(f"Run folder not found: {run_path}")
             return
-        # Analyze all well CSVs
         for fname in sorted(os.listdir(run_path)):
             if fname.startswith("well_") and fname.endswith(".csv"):
-                # If data were measured with return, only analyze direction-specific files
                 if existing_measured_with_return and not (fname.endswith("_down.csv") or fname.endswith("_up.csv")):
                     continue
-                # Parse well name from filename well_<WELL>_*.csv
                 try:
                     parts = fname.split("_")
                     well_core = parts[1]
@@ -697,61 +683,16 @@ def main(
                     continue
                 datafile = os.path.join(run_path, fname)
                 if well_name.lower().endswith("_down"):
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=f"{well_core.upper()}_down",
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                    )
+                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_down", contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
                 elif well_name.lower().endswith("_up"):
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=f"{well_core.upper()}_up",
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                    )
+                    r = analyze_file(datafile=datafile, well=f"{well_core.upper()}_up", contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
                 else:
-                    r = analyze_file(
-                        datafile=datafile,
-                        well=well_core.upper(),
-                        contact_method=contact_method,
-                        fit_method=fit_method,
-                        apply_system_correction=apply_system_correction,
-                        retrospective_threshold=retrospective_threshold,
-                        max_depth=max_depth,
-                        min_depth=min_depth,
-                        apply_force_correction=apply_force_correction,
-                        iterative_d0_refinement=iterative_d0_refinement,
-                        well_bottom_z=well_bottom_z,
-                        poisson_ratio=poisson_ratio,
-                        use_legacy_height=use_legacy_height,
-                        legacy_height_step_mm=legacy_height_step_mm,
-                    )
+                    r = analyze_file(datafile=datafile, well=well_core.upper(), contact_method=contact_method, fit_method=fit_method, apply_system_correction=apply_system_correction, retrospective_threshold=retrospective_threshold, max_depth=max_depth, min_depth=min_depth, apply_force_correction=apply_force_correction, iterative_d0_refinement=iterative_d0_refinement, well_bottom_z=well_bottom_z, poisson_ratio=poisson_ratio, use_legacy_height=use_legacy_height, legacy_height_step_mm=legacy_height_step_mm)
                 if r:
                     results.append(r)
 
     if wells_to_test is not None and generate_heatmap and results and run_folder_name:
-        plots_root = os.path.join("results", "plots", run_folder_name)
+        plots_root = os.path.join(_PLOTS_BASE, run_folder_name)
         os.makedirs(plots_root, exist_ok=True)
 
         wants_split_heatmaps = (do_measure and measure_with_return) or (not do_measure and existing_measured_with_return)
@@ -764,7 +705,6 @@ def main(
                 out_csv = os.path.join(plots_root, f"summary_{name}.csv")
                 with open(out_csv, "w", newline="") as f:
                     w = csv.writer(f)
-                    # Check if we have linear fit results (spring constant) or Hertzian (elastic modulus)
                     has_linear = any(getattr(r, 'spring_constant', None) is not None for r in subset if r)
                     if has_linear:
                         w.writerow(["Well", "SpringConstant_k", "Intercept_b", "R2"])
@@ -782,7 +722,6 @@ def main(
                                 r2_val = getattr(r, 'linear_fit_quality', getattr(r, 'fit_quality', 0))
                                 w.writerow([well_core.upper(), k_val, b_val, r2_val])
                     else:
-                        # Check if we have system correction (original E values available)
                         has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in subset if r)
                         if has_system_correction:
                             w.writerow(["Well", "ElasticModulus", "ElasticModulus_Original", "Std", "R2", "R2_Original"])
@@ -799,7 +738,7 @@ def main(
                                     orig_r2 = getattr(r, 'original_fit_quality', r.fit_quality)
                                     w.writerow([well_core.upper(), r.elastic_modulus, orig_E, r.uncertainty, r.fit_quality, orig_r2])
                         else:
-                            w.writerow(["Well", "ElasticModulus", "Std", "R2"])  # Std = uncertainty
+                            w.writerow(["Well", "ElasticModulus", "Std", "R2"])
                             for r in subset:
                                 if r:
                                     name_lower = r.well.lower()
@@ -814,93 +753,61 @@ def main(
 
             if down_results:
                 down_csv = write_subset("down", down_results)
-                # Check if we have linear fit data
                 has_linear = any(getattr(r, 'spring_constant', None) is not None for r in down_results if r)
                 if has_linear:
-                    # Create heatmaps for spring constant and intercept
                     plotter.plot_well_heatmap(down_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_down_spring_constant.png"), convert_to_mpa=False)
                     plotter.plot_well_heatmap(down_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_down_intercept.png"), convert_to_mpa=False)
-                    # Print statistics
                     print_linear_statistics(down_results, "(Down)")
                 else:
-                    # Check if we have system correction data
                     has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in down_results if r)
                     if has_system_correction:
-                        # Generate two separate heatmaps
                         plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_down_corrected.png"), title_suffix=" (System Corrected)")
                         plotter.plot_well_heatmap(down_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_down_original.png"), title_suffix=" (Original)")
-                        # Generate correction comparison plot
-                        plotter.plot_correction_comparison(
-                            down_csv, 
-                            save_path=os.path.join(plots_root, "correction_comparison_down.png"),
-                            convert_to_mpa=True
-                        )
+                        plotter.plot_correction_comparison(down_csv, save_path=os.path.join(plots_root, "correction_comparison_down.png"), convert_to_mpa=True)
                     else:
                         plotter.plot_well_heatmap(down_csv, save_path=os.path.join(plots_root, "well_heatmap_down.png"))
             if up_results:
                 up_csv = write_subset("up", up_results)
-                # Check if we have linear fit data
                 has_linear = any(getattr(r, 'spring_constant', None) is not None for r in up_results if r)
                 if has_linear:
-                    # Create heatmaps for spring constant and intercept
                     plotter.plot_well_heatmap(up_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_up_spring_constant.png"), convert_to_mpa=False)
                     plotter.plot_well_heatmap(up_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_up_intercept.png"), convert_to_mpa=False)
-                    # Print statistics
                     print_linear_statistics(up_results, "(Up)")
                 else:
-                    # Check if we have system correction data
                     has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in up_results if r)
                     if has_system_correction:
-                        # Generate two separate heatmaps
                         plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_up_corrected.png"), title_suffix=" (System Corrected)")
                         plotter.plot_well_heatmap(up_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_up_original.png"), title_suffix=" (Original)")
-                        # Generate correction comparison plot
-                        plotter.plot_correction_comparison(
-                            up_csv, 
-                            save_path=os.path.join(plots_root, "correction_comparison_up.png"),
-                            convert_to_mpa=True
-                        )
+                        plotter.plot_correction_comparison(up_csv, save_path=os.path.join(plots_root, "correction_comparison_up.png"), convert_to_mpa=True)
                     else:
                         plotter.plot_well_heatmap(up_csv, save_path=os.path.join(plots_root, "well_heatmap_up.png"))
         else:
-            # Legacy data: generate heatmaps
             summary_csv = write_summary_csv(run_folder_name, results)
-            # Check if we have linear fit data
             has_linear = any(getattr(r, 'spring_constant', None) is not None for r in results if r)
             if has_linear:
-                # Create heatmaps for spring constant and intercept
                 plotter.plot_well_heatmap(summary_csv, value_col='SpringConstant_k', save_path=os.path.join(plots_root, "well_heatmap_spring_constant.png"), convert_to_mpa=False)
                 plotter.plot_well_heatmap(summary_csv, value_col='Intercept_b', save_path=os.path.join(plots_root, "well_heatmap_intercept.png"), convert_to_mpa=False)
-                # Print statistics
                 print_linear_statistics(results)
             else:
-                # Check if we have system correction data
                 has_system_correction = any(getattr(r, 'original_elastic_modulus', None) is not None for r in results if r)
                 if has_system_correction:
-                    # Generate two separate heatmaps
                     plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus', save_path=os.path.join(plots_root, "well_heatmap_corrected.png"), title_suffix=" (System Corrected)")
                     plotter.plot_well_heatmap(summary_csv, value_col='ElasticModulus_Original', save_path=os.path.join(plots_root, "well_heatmap_original.png"), title_suffix=" (Original)")
                 else:
                     plotter.plot_well_heatmap(summary_csv, save_path=os.path.join(plots_root, "well_heatmap.png"))
-                
-                # Generate correction comparison plot if system correction was applied
+
                 if has_system_correction:
-                    plotter.plot_correction_comparison(
-                        summary_csv, 
-                        save_path=os.path.join(plots_root, "correction_comparison.png"),
-                        convert_to_mpa=True
-                    )
-                    # Run diagnostic to check for correction issues
+                    plotter.plot_correction_comparison(summary_csv, save_path=os.path.join(plots_root, "correction_comparison.png"), convert_to_mpa=True)
                     try:
                         tmp_analyzer = IndentationAnalyzer()
                         diag = tmp_analyzer.diagnose_correction_issue(summary_csv)
                         if diag.get('scatter_increased'):
-                            print(f"\n⚠️ WARNING: Scatter increased after correction!")
+                            print(f"\nWARNING: Scatter increased after correction!")
                             print(f"   Original CV: {diag.get('original_cv', 0):.2f}%")
                             print(f"   Corrected CV: {diag.get('corrected_cv', 0):.2f}%")
                             print(f"   {diag.get('recommendation', 'Check spring constant values in CSV.')}")
                     except Exception as e:
-                        print(f"⚠️ Could not run correction diagnostics: {e}")
+                        print(f"Could not run correction diagnostics: {e}")
 
     # Also generate raw data plots for the run folder
     if run_folder_name:
@@ -909,7 +816,7 @@ def main(
             tmp_analyzer.plot_raw_data_all_wells(run_folder_name, save_plot=True)
             tmp_analyzer.plot_raw_force_individual_wells(run_folder_name, save_plot=True)
         except Exception as e:
-            print(f"⚠️ Failed to generate raw data plots: {e}")
+            print(f"Failed to generate raw data plots: {e}")
 
 
 def run_main_at_intervals(
@@ -931,58 +838,37 @@ def run_main_at_intervals(
     fit_method: str = "hertzian",
     max_depth: float = 0.5,
 ):
-    """Run main measurement cycles at regular intervals with enhanced error handling and timing.
-    
-    Args:
-        interval_seconds: Time between cycle starts (seconds)
-        cycles: Number of measurement cycles to run
-        wells_to_test: List of wells to measure in each cycle
-        contact_method: Contact detection method
-        measure_with_return: Enable return measurements
-        z_target: Target indentation depth (mm)
-        step_size: Movement step size (mm)
-        force_limit: Force limit (N)
-        well_top_z: Well top position (mm) or None to use current Z position
-        generate_heatmap: Generate heatmaps after each cycle
-        start_delay: Initial delay before first cycle (seconds)
-        stop_on_error: Stop all cycles if one fails (vs continue)
-        move_to_pickup: Move to pickup position after each cycle
-        pickup_position: XYZ coordinates for pickup position (x, y, z) in mm
-        fit_method: Fitting method ("hertzian" for elastic modulus, "linear" for spring constant)
-        max_depth: Maximum depth (mm) to use for analysis (default: 0.5 mm)
-    """
-    print(f"🔄 Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
-    print(f"📍 Wells: {wells_to_test}")
-    print(f"⚙️ Method: {contact_method}, Return: {measure_with_return}")
-    print(f"🎯 Z-target: {z_target}mm, Step: {step_size}mm, Force limit: {force_limit}N")
-    
+    """Run main measurement cycles at regular intervals."""
+    print(f"Starting scheduled measurements: {cycles} cycles every {interval_seconds:.1f}s")
+    print(f"Wells: {wells_to_test}")
+    print(f"Method: {contact_method}, Return: {measure_with_return}")
+    print(f"Z-target: {z_target}mm, Step: {step_size}mm, Force limit: {force_limit}N")
+
     if start_delay > 0:
-        print(f"⏳ Initial delay: {start_delay:.1f}s...")
+        print(f"Initial delay: {start_delay:.1f}s...")
         time.sleep(start_delay)
-    
+
     start_time = time.time()
     successful_cycles = 0
     failed_cycles = 0
-    
+
     try:
         for i in range(cycles):
             cycle_num = i + 1
             cycle_start_time = start_time + i * interval_seconds
             current_time = time.time()
-            
-            # Calculate wait time for precise timing
+
             if current_time < cycle_start_time:
                 wait_time = cycle_start_time - current_time
-                print(f"⏳ Waiting {wait_time:.1f}s before cycle {cycle_num}/{cycles}...")
+                print(f"Waiting {wait_time:.1f}s before cycle {cycle_num}/{cycles}...")
                 time.sleep(wait_time)
-            
+
             cycle_actual_start = time.time()
             print(f"\n{'='*60}")
-            print(f"▶️ Starting cycle {cycle_num}/{cycles} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Starting cycle {cycle_num}/{cycles} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"{'='*60}")
-            
+
             try:
-                # Run the measurement cycle
                 main(
                     do_measure=True,
                     home_before_measure=home_before_measure,
@@ -999,176 +885,95 @@ def run_main_at_intervals(
                     fit_method=fit_method,
                     max_depth=max_depth,
                 )
-                
+
                 cycle_duration = time.time() - cycle_actual_start
                 successful_cycles += 1
-                print(f"✅ Cycle {cycle_num} completed in {cycle_duration:.1f}s")
-                
+                print(f"Cycle {cycle_num} completed in {cycle_duration:.1f}s")
+
             except KeyboardInterrupt:
-                print(f"\n🛑 Keyboard interrupt received during cycle {cycle_num}")
-                print(f"📊 Completed {successful_cycles}/{cycles} cycles successfully")
+                print(f"\nKeyboard interrupt during cycle {cycle_num}")
+                print(f"Completed {successful_cycles}/{cycles} cycles")
                 raise
-                
+
             except Exception as e:
                 failed_cycles += 1
-                print(f"❌ Cycle {cycle_num} failed: {e}")
-                
+                print(f"Cycle {cycle_num} failed: {e}")
+
                 if stop_on_error:
-                    print(f"🛑 Stopping due to error (stop_on_error=True)")
+                    print("Stopping due to error (stop_on_error=True)")
                     break
                 else:
-                    print(f"⚠️ Continuing with next cycle...")
-            
-            # Calculate time until next cycle
+                    print("Continuing with next cycle...")
+
             if cycle_num < cycles:
                 next_cycle_time = start_time + cycle_num * interval_seconds
                 current_time = time.time()
                 time_until_next = next_cycle_time - current_time
-                
+
                 if time_until_next > 0:
-                    print(f"⏳ Waiting {time_until_next:.1f}s until next cycle...")
+                    print(f"Waiting {time_until_next:.1f}s until next cycle...")
                     time.sleep(time_until_next)
                 else:
-                    print(f"⚠️ Running behind schedule by {abs(time_until_next):.1f}s")
-        
+                    print(f"Running behind schedule by {abs(time_until_next):.1f}s")
+
     except KeyboardInterrupt:
-        print(f"\n🛑 Scheduled measurements interrupted by user")
-    
+        print("\nScheduled measurements interrupted by user")
+
     finally:
         total_time = time.time() - start_time
         print(f"\n{'='*60}")
-        print(f"📊 SCHEDULED MEASUREMENTS SUMMARY")
+        print("SCHEDULED MEASUREMENTS SUMMARY")
         print(f"{'='*60}")
-        print(f"✅ Successful cycles: {successful_cycles}/{cycles}")
-        print(f"❌ Failed cycles: {failed_cycles}")
-        print(f"⏱️ Total time: {total_time/60:.1f} minutes")
-        print(f"📈 Success rate: {successful_cycles/cycles*100:.1f}%")
-        print(f"🕐 Average cycle time: {total_time/cycles:.1f}s")
-        print(f"🏁 Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Successful cycles: {successful_cycles}/{cycles}")
+        print(f"Failed cycles: {failed_cycles}")
+        print(f"Total time: {total_time/60:.1f} minutes")
+        print(f"Success rate: {successful_cycles/cycles*100:.1f}%")
+        print(f"Average cycle time: {total_time/cycles:.1f}s")
+        print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*60}")
 
 
 if __name__ == "__main__":
-    # Example usage
-    # main(do_measure=True, wells_to_test=["A1", "A2"], contact_method="extrapolation", measure_with_return=True)
-    # Or analyze existing run:
-    # main(do_measure=False, existing_run_folder="run_460_20250911_062621", existing_measured_with_return=True)
-    
-    # Example scheduled measurements:
-    # run_main_at_intervals(
-    #     interval_seconds=3600,  # 1 hour
-    #     cycles=24,              # 24 cycles
-    #     wells_to_test=["A1", "A2", "B1", "B2"],
-    #     contact_method="extrapolation",
-    #     measure_with_return=True,
-    #     start_delay=10.0,       # 10 second initial delay
-    #     stop_on_error=False,    # Continue even if one cycle fails
-    #     move_to_pickup=True,    # Move to pickup position after each cycle
-    #     pickup_position=(0.0, 140.0, 10.0)  # X, Y, Z coordinates
-    # )
-    
-    # Example with pickup position:
-    # main(
-    #     do_measure=True,
-    #     wells_to_test=["A1", "A2"],
-    #     move_to_pickup=True,
-    #     pickup_position=(0.0, 140.0, 0.0)  # Move to pickup after measurements
-    # )
-    
-    # Example measuring at current position (no well):
-    # main(
-    #     do_measure=True,
-    #     wells_to_test=[None],  # Measure at current position
-    #     contact_method="extrapolation",
-    #     measure_with_return=True,
-    #     z_target=-15.0,
-    #     step_size=0.01,
-    #     force_limit=5.0,
-    #     well_top_z=None  # Use current Z position as reference
-    # )
-    
-    # Home the machine if something goes wrong
-    # from src.CNCController import CNCController
-    # cnc = CNCController()
-    # cnc.home(zero_after=True)
-    
-    # wells_to_test = ["B11"]
-    # main(do_measure=True, 
-    #      existing_run_folder='run_463_20250917_000017', 
-    #      wells_to_test=wells_to_test, 
-    #      contact_method="retrospective", 
-    #      measure_with_return=True,
-    #      move_to_pickup=True, # Move to pickup position after measurements
-    #      pickup_position=(0.0, 140.0, 0.0) # X, Y, Z coordinates
-    #      )
-    
-    # Test all wells
-    # wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
-    
-    # Test wells
-    wells_to_test = ['E5', 'E6', 'E7']
-    # Choose fitting method:
-    # fit_method="hertzian" - Calculate elastic modulus using Hertzian contact mechanics
-    # fit_method="linear"   - Calculate spring constant using linear fit (F = k * d)
-    
-    # Hardware initialization: Set do_measure=True to initialize hardware, False to analyze existing data only
-    # The main() function will automatically initialize hardware if do_measure=True and cnc/force_sensor are None
-    DO_MEASURE = False # Set to False to analyze existing data without hardware
-    
-    cnc = None
-    force_sensor = None
-    if DO_MEASURE:
-        cnc = CNCController()
-        force_sensor = ForceSensor()
-    
-    # Test the system compliance k_system
-    # main(
-    #     cnc=cnc,
-    #     force_sensor=force_sensor,
-    #     do_measure=DO_MEASURE, 
-    #     home_before_measure=True,
-    #     wells_to_test=wells_to_test,
-    #     contact_method="retrospective",
-    #     retrospective_threshold=13.0, # 13.0N for measuring the spring constant of the system
-    #     fit_method="linear",  # Try "hertzian" for elastic modulus
-    #     measure_with_return=False,
-    #     move_to_pickup=False, # if True, move to pickup position after measurements
-    #     step_size=0.01,
-    #     z_target=-90.0,
-    #     force_limit=20.0,
-    #     well_top_z=-80.0, #-82.0 for well bottom, -84.0 for alumnium plate
-    #     lock_xy_single_spot=False,
-    #     lock_xy_position=(-120, -40.0),
-    #     existing_run_folder="run_734_20260209_164304",
-    #     existing_measured_with_return=False
-    #      )
-    
-    
-    # Test the materials
+    exp = load_experiment()
+    m = exp.get('measurement', {})
+    w = exp.get('wells', {})
+    a = exp.get('analysis', {})
+    wf = exp.get('workflow', {})
+
+    do_measure = wf.get('do_measure', False)
+
+    gantry = None
+    asmi = None
+    if do_measure:
+        gantry = _init_gantry()
+        asmi = _init_asmi()
+
     main(
-        cnc=cnc,
-        force_sensor=force_sensor,
-        do_measure=DO_MEASURE, 
-        home_before_measure=True,
-        wells_to_test=wells_to_test,
-        contact_method="retrospective", # "extrapolation", "retrospective", "simple_threshold", "baseline_threshold"
-        retrospective_threshold=0.01, # 0.05N for measuring the materials
-        fit_method="hertzian",  # Try "hertzian" for elastic modulus
-        measure_with_return=False, # measure with return (up/down)
-        move_to_pickup=False, # if True, move to pickup position after measurements
-         step_size=0.01, # step size of the measurement (mm)
-         z_target=-90.0,
-         force_limit=10.0,
-         well_top_z=-73.0, # start point of the measurement (avoid wasting time to move to the top of the material)
-        existing_run_folder="run_774_20260206_133925",
-        existing_measured_with_return=False,
-        apply_system_correction=False, # apply system correction (account for the system compliance)
-        max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
-        min_depth=0.24, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
-        poisson_ratio=0.5, # Poisson's ratio for the sample
-        apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
-        iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
-        well_bottom_z=-27.2, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
-        use_legacy_height=True, # Use original batch script approx_height for (b,c) lookup (match original E)
-        legacy_height_step_mm=0.01, # Match step_size for legacy height formula
-         )
+        gantry=gantry,
+        asmi=asmi,
+        do_measure=do_measure,
+        home_before_measure=wf.get('home_before_measure', True),
+        wells_to_test=w.get('wells_to_test'),
+        contact_method=a.get('contact_method', 'retrospective'),
+        retrospective_threshold=a.get('retrospective_threshold'),
+        fit_method=a.get('fit_method', 'hertzian'),
+        measure_with_return=m.get('measure_with_return', False),
+        move_to_pickup=wf.get('move_to_pickup', False),
+        pickup_position=tuple(wf.get('pickup_position', [0.0, 0.0, 0.0])),
+        step_size=m.get('step_size', 0.01),
+        z_target=m.get('z_target', -15.0),
+        force_limit=m.get('force_limit', 5.0),
+        well_top_z=m.get('well_top_z', -9.0),
+        well_bottom_z=m.get('well_bottom_z', -85.0),
+        existing_run_folder=wf.get('existing_run_folder'),
+        existing_measured_with_return=wf.get('existing_measured_with_return', False),
+        apply_system_correction=a.get('apply_system_correction', True),
+        max_depth=a.get('max_depth', 0.5),
+        min_depth=a.get('min_depth', 0.25),
+        poisson_ratio=a.get('poisson_ratio'),
+        apply_force_correction=a.get('apply_force_correction', False),
+        iterative_d0_refinement=a.get('iterative_d0_refinement', False),
+        use_legacy_height=a.get('use_legacy_height', False),
+        legacy_height_step_mm=a.get('legacy_height_step_mm', 0.02),
+        generate_heatmap=wf.get('generate_heatmap', True),
+    )

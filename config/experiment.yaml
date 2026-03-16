@@ -1,0 +1,55 @@
+# ASMI experiment configuration.
+# Edit this file for each experiment run.
+
+paths:
+  results_base: results/measurements
+  plots_base: results/plots
+  run_count_file: src/run_count.txt
+  panda_core_src: ../PANDA_CORE/src
+  deck_yaml: config/deck.yaml
+
+gantry:
+  safe_z: -50.0
+  idle_timeout: 10.0
+
+system:
+  k_system: 64.27
+
+measurement:
+  z_target: -90.0
+  step_size: 0.01
+  force_limit: 10.0
+  well_top_z: -73.0
+  well_bottom_z: -27.2
+  baseline_samples: 10
+  measure_with_return: false
+
+wells:
+  wells_to_test:
+    - E5
+    - E6
+    - E7
+  lock_xy_single_spot: false
+  lock_xy_position: null
+
+analysis:
+  contact_method: retrospective
+  fit_method: hertzian
+  apply_system_correction: false
+  retrospective_threshold: 0.01
+  max_depth: 0.5
+  min_depth: 0.24
+  poisson_ratio: 0.5
+  apply_force_correction: true
+  iterative_d0_refinement: true
+  use_legacy_height: true
+  legacy_height_step_mm: 0.01
+
+workflow:
+  do_measure: false
+  home_before_measure: true
+  generate_heatmap: true
+  move_to_pickup: false
+  pickup_position: [0.0, 0.0, 0.0]
+  existing_run_folder: run_774_20260206_133925
+  existing_measured_with_return: false
