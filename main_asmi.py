@@ -21,31 +21,20 @@ import csv
 import time
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 import yaml
 
-# ── Load experiment config and set up PANDA_CORE path ─────────────────────
-_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config')
-
-with open(os.path.join(_CONFIG_DIR, 'experiment.yaml')) as _f:
-    _cfg = yaml.safe_load(_f)
-
-_PANDA_CORE_SRC = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    _cfg.get('paths', {}).get('panda_core_src', '../PANDA_CORE/src'),
-)
-if os.path.isdir(_PANDA_CORE_SRC) and _PANDA_CORE_SRC not in sys.path:
-    sys.path.insert(0, _PANDA_CORE_SRC)
-
-_RESULTS_BASE = _cfg.get('paths', {}).get('results_base', 'results/measurements')
-_PLOTS_BASE = _cfg.get('paths', {}).get('plots_base', 'results/plots')
-_RUN_COUNT_FILE = _cfg.get('paths', {}).get('run_count_file', 'src/run_count.txt')
-_SAFE_Z = _cfg.get('gantry', {}).get('safe_z', -50.0)
-_K_SYSTEM = _cfg.get('system', {}).get('k_system', 64.27)
+# ── PANDA_CORE path setup ────────────────────────────────────────────────
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_PANDA_CORE_SRC = _PROJECT_ROOT / '..' / 'PANDA_CORE' / 'src'
+if _PANDA_CORE_SRC.is_dir() and str(_PANDA_CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(_PANDA_CORE_SRC))
 
 from gantry.gantry import Gantry
-from instruments.asmi.driver import ASMI
+from gantry.loader import load_gantry_from_yaml
 from deck import load_deck_from_yaml
+from board.loader import load_board_from_yaml
 
 from src.ForceMonitoring import (
     simple_indentation_measurement,
@@ -56,12 +45,25 @@ from src.analysis import IndentationAnalyzer
 from src.plot import plotter
 from src.version import get_full_version
 
-# ── Load deck ─────────────────────────────────────────────────────────────
-_deck_path = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    _cfg.get('paths', {}).get('deck_yaml', 'config/deck.yaml'),
-)
-_deck = load_deck_from_yaml(_deck_path)
+# ── Load configs following PANDA_CORE conventions ────────────────────────
+_CONFIGS = _PROJECT_ROOT / 'configs'
+
+_GANTRY_YAML = _CONFIGS / 'gantry' / 'asmi_gantry.yaml'
+_DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
+_BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
+_EXPERIMENT_YAML = _CONFIGS / 'experiment.yaml'
+
+with open(_EXPERIMENT_YAML) as _f:
+    _cfg = yaml.safe_load(_f)
+
+_RESULTS_BASE = _cfg.get('paths', {}).get('results_base', 'results/measurements')
+_PLOTS_BASE = _cfg.get('paths', {}).get('plots_base', 'results/plots')
+_RUN_COUNT_FILE = _cfg.get('paths', {}).get('run_count_file', 'src/run_count.txt')
+_SAFE_Z = _cfg.get('gantry', {}).get('safe_z', -50.0)
+_K_SYSTEM = _cfg.get('system', {}).get('k_system', 64.27)
+
+# Load deck for well position resolution
+_deck = load_deck_from_yaml(_DECK_YAML)
 _plate = _deck["plate"]
 
 
@@ -69,6 +71,18 @@ def _resolve_well_xy(well_id: str) -> tuple[float, float]:
     """Look up well XY from the deck's well plate."""
     coord = _plate.get_well_center(well_id)
     return (coord.x, coord.y)
+
+
+def _init_hardware() -> tuple[Gantry, object]:
+    """Load gantry config, create Gantry + Board with ASMI, connect all."""
+    with open(_GANTRY_YAML) as f:
+        gantry_config = yaml.safe_load(f)
+    gantry = Gantry(config=gantry_config)
+    gantry.connect()
+    board = load_board_from_yaml(_BOARD_YAML, gantry)
+    board.connect_instruments()
+    asmi = board.instruments["asmi"]
+    return gantry, asmi
 
 
 def ensure_run_folder(base: str = None) -> str:
@@ -491,20 +505,6 @@ def print_version():
     print(get_full_version())
 
 
-def _init_gantry() -> Gantry:
-    """Create, connect, and return a PANDA_CORE Gantry instance."""
-    gantry = Gantry()
-    gantry.connect()
-    return gantry
-
-
-def _init_asmi() -> ASMI:
-    """Create, connect, and return a PANDA_CORE ASMI instance."""
-    asmi = ASMI()
-    asmi.connect()
-    return asmi
-
-
 def main(
     home_before_measure: bool = True,
     gantry: Gantry | None = None,
@@ -570,10 +570,8 @@ def main(
 
     if do_measure:
         # Ensure hardware is initialized
-        if gantry is None:
-            gantry = _init_gantry()
-        if asmi is None:
-            asmi = _init_asmi()
+        if gantry is None or asmi is None:
+            gantry, asmi = _init_hardware()
 
         # Unlock and home
         try:
@@ -945,8 +943,7 @@ if __name__ == "__main__":
     gantry = None
     asmi = None
     if do_measure:
-        gantry = _init_gantry()
-        asmi = _init_asmi()
+        gantry, asmi = _init_hardware()
 
     main(
         gantry=gantry,

@@ -1,8 +1,6 @@
-# ASMI deck configuration (PANDA_CORE format).
-# Well positions are computed from A1 calibration + offsets.
-#
-# Orientation: columns (1-12) increase in X, rows (A-H) decrease in Y.
-# A2 = A1 + one column step in X to establish the axis mapping.
+# ASMI deck configuration — 96-well plate for indentation.
+# Columns (1-12) increase in X, rows (A-H) decrease in Y.
+# A2 = A1 + one column step in X to establish axis mapping.
 
 labware:
   plate:

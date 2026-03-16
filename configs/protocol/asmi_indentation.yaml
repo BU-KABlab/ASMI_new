@@ -1,0 +1,9 @@
+# ASMI indentation protocol.
+# Scans the well plate with the ASMI force sensor.
+# The ASMI scan command performs step-by-step indentation at each well.
+
+protocol:
+  - scan:
+      plate: plate
+      instrument: asmi
+      method: measure
