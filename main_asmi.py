@@ -23,7 +23,6 @@ from pathlib import Path
 import yaml
 
 from gantry.gantry import Gantry
-from gantry.offline import OfflineGantry
 from protocol_engine.setup import setup_protocol
 from data.data_store import DataStore
 
@@ -56,7 +55,7 @@ def run(mock: bool = False) -> None:
 
     # Build gantry
     if mock:
-        gantry = OfflineGantry()
+        gantry = Gantry(offline=True)
     else:
         with open(_GANTRY_YAML) as f:
             gantry_config = yaml.safe_load(f)
