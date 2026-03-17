@@ -22,19 +22,12 @@ from pathlib import Path
 
 import yaml
 
-# ── PANDA_CORE path setup ────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).resolve().parent
-_PANDA_CORE_ROOT = _PROJECT_ROOT / '..' / 'PANDA_CORE'
-_PANDA_CORE_SRC = _PANDA_CORE_ROOT / 'src'
-if _PANDA_CORE_SRC.is_dir() and str(_PANDA_CORE_SRC) not in sys.path:
-    sys.path.insert(0, str(_PANDA_CORE_SRC))
-if _PANDA_CORE_ROOT.is_dir() and str(_PANDA_CORE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PANDA_CORE_ROOT))
-
 from gantry.gantry import Gantry
 from gantry.offline import OfflineGantry
 from protocol_engine.setup import setup_protocol
 from data.data_store import DataStore
+
+_PROJECT_ROOT = Path(__file__).resolve().parent
 
 # ── Config paths ──────────────────────────────────────────────────────────
 _CONFIGS = _PROJECT_ROOT / 'configs'
