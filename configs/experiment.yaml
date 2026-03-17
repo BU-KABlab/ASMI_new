@@ -49,6 +49,7 @@ workflow:
   existing_measured_with_return: false
 
 paths:
+  database: data/asmi_data.db
   results_base: results/measurements
   plots_base: results/plots
   run_count_file: src/run_count.txt
