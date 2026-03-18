@@ -7,12 +7,11 @@ Usage:
     python3 main_asmi.py --mock       # offline dry run with mock instruments
     python3 main_asmi.py --no-home    # skip homing (use if already homed via UGS)
 
-All configuration lives in YAML files under configs/:
-    gantry/asmi_gantry.yaml   — CNC serial port, working volume, GRBL settings
-    deck/asmi_deck.yaml       — well plate geometry and calibration
-    board/asmi_board.yaml     — ASMI instrument with indentation parameters
-    protocol/asmi_indentation.yaml — scan protocol (method: indentation)
-    experiment.yaml           — analysis params, paths, workflow flags
+Configuration lives in YAML files under configs/:
+    gantry/asmi_gantry.yaml          — CNC serial port, working volume, GRBL
+    deck/asmi_deck.yaml              — well plate geometry and calibration
+    board/asmi_board.yaml            — ASMI instrument with indentation params
+    protocol/asmi_indentation.yaml   — scan protocol (method: indentation)
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from pathlib import Path
 import yaml
 
 from gantry.gantry import Gantry
-from gantry.offline import OfflineGantry
 from protocol_engine.setup import setup_protocol
 from data.data_store import DataStore
 
@@ -45,20 +43,13 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
     """Run the ASMI indentation protocol with SQL persistence.
 
     Args:
-        mock: If True, use OfflineGantry + MockASMI (no hardware).
+        mock: If True, use Gantry(offline=True) + mock instruments.
     """
-    with open(_EXPERIMENT_YAML) as f:
-        cfg = yaml.safe_load(f)
-
-    paths = cfg.get('paths', {})
-    db_path = paths.get('database', 'data/asmi_data.db')
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-    board_yaml = _MOCK_BOARD_YAML if mock else _BOARD_YAML
+    os.makedirs(_DB_PATH.parent, exist_ok=True)
 
     # Build gantry
     if mock:
-        gantry = OfflineGantry()
+        gantry = Gantry(offline=True)
     else:
         with open(_GANTRY_YAML) as f:
             gantry_config = yaml.safe_load(f)
@@ -93,10 +84,10 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
         # Short serial timeout for fast status polling during moves (0.1s per read)
         gantry._mill.ser_mill.timeout = 0.1
 
-    # Load protocol
+    # Load protocol (mock_mode swaps asmi -> mock_asmi in board loader)
     protocol, context = setup_protocol(
-        str(_GANTRY_YAML), str(_DECK_YAML), str(board_yaml),
-        str(_PROTOCOL_YAML), gantry=gantry,
+        str(_GANTRY_YAML), str(_DECK_YAML), str(_BOARD_YAML),
+        str(_PROTOCOL_YAML), gantry=gantry, mock_mode=mock,
     )
 
     # Filter wells if wells_to_test is specified in experiment config
@@ -109,17 +100,27 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
             del plate.wells[w]
         print(f"Measuring {len(plate.wells)} wells: {sorted(plate.wells.keys())}")
 
+    # Filter wells if wells_to_test is specified in experiment config
+    wells_to_test = cfg.get("wells", {}).get("wells_to_test")
+    if wells_to_test:
+        plate = context.deck["plate"]
+        keep = {str(w).upper() for w in wells_to_test}
+        to_remove = [w for w in plate.wells if w not in keep]
+        for w in to_remove:
+            del plate.wells[w]
+        print(f"Measuring {len(plate.wells)} wells: {sorted(plate.wells.keys())}")
+
     # DataStore
-    store = DataStore(db_path=db_path)
+    store = DataStore(db_path=str(_DB_PATH))
     context.data_store = store
     context.campaign_id = store.create_campaign(
-        description=cfg.get('description', 'ASMI indentation run'),
+        description='ASMI indentation run',
         deck_config=str(_DECK_YAML),
-        board_config=str(board_yaml),
+        board_config=str(_BOARD_YAML),
         gantry_config=str(_GANTRY_YAML),
         protocol_config=str(_PROTOCOL_YAML),
     )
-    print(f"Campaign {context.campaign_id} created in {db_path}")
+    print(f"Campaign {context.campaign_id} created in {_DB_PATH}")
 
     # Connect instruments and run (GoDirect USB scan can take ~5–15 s)
     print("Connecting force sensor...")
@@ -160,7 +161,7 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
                 pass
             gantry.disconnect()
         store.close()
-        print(f"Data persisted to {db_path}")
+        print(f"Data persisted to {_DB_PATH}")
 
 
 if __name__ == "__main__":

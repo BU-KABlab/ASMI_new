@@ -2,7 +2,7 @@
 # Core dependencies for CNC control, force sensing, data analysis, and visualization
 
 # PANDA_CORE — gantry, instruments, protocol engine, data persistence
-panda-core @ git+https://github.com/Hydra-Laboratories/PANDA_CORE.git@feature/asmi-gantry-extensions
+panda-core @ git+https://github.com/Hydra-Laboratories/PANDA_CORE.git@staging
 
 # Hardware communication
 pyserial>=3.5.0
