@@ -11,7 +11,7 @@ working_volume:
   x_max: 0.01   # 0.01 avoids "not set" warning; home WPos ≈ (0, 0)
   y_min: -300.0
   y_max: 0.01
-  z_min: -100.0
+  z_min: -80.0
   z_max: 0.0
 
 grbl_settings:
@@ -21,4 +21,4 @@ grbl_settings:
   steps_per_mm_z: 400.0
   max_travel_x: 400.0
   max_travel_y: 300.0
-  max_travel_z: 100.0
+  max_travel_z: 80.0
