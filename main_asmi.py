@@ -6,6 +6,7 @@ Usage:
     python3 main_asmi.py              # real hardware, configs from configs/
     python3 main_asmi.py --mock       # offline dry run with mock instruments
     python3 main_asmi.py --no-home    # skip homing (use if already homed via UGS)
+    python3 main_asmi.py --skip-force-sensor  # real gantry, mock force sensor (for GoDirect issues)
 
 Configuration lives in YAML files under configs/:
     gantry/asmi_gantry.yaml          — CNC serial port, working volume, GRBL
@@ -13,6 +14,13 @@ Configuration lives in YAML files under configs/:
     board/asmi_board.yaml            — ASMI instrument with indentation params
     protocol/asmi_indentation.yaml   — scan protocol (method: indentation)
     experiment.yaml                  — wells, analysis, workflow, speed overrides
+
+Troubleshooting:
+    • GRBL Alarm: Unlock ($X) and home ($H) clear it. The runner does both;
+      if alarm persists, home manually via UGS first, then use --no-home.
+    • struct.error "unpack requires a buffer of 18 bytes": GoDirect firmware/
+      protocol mismatch. Use --skip-force-sensor to run with mock force data,
+      or try: pip install -U godirect; different USB port; verify sensor model.
 """
 
 from __future__ import annotations
@@ -38,7 +46,11 @@ _PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation.yaml'
 _EXPERIMENT_YAML = _CONFIGS / 'experiment.yaml'
 
 
-def run(mock: bool = False, skip_home: bool = False) -> None:
+def run(
+    mock: bool = False,
+    skip_home: bool = False,
+    skip_force_sensor: bool = False,
+) -> None:
     """Run the ASMI indentation protocol with SQL persistence."""
     with open(_EXPERIMENT_YAML) as f:
         cfg = yaml.safe_load(f)
@@ -69,12 +81,12 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
             gantry.home()
             gantry.zero_coordinates()
         gantry.set_safe_z(gantry_cfg.get('safe_z', -50.0))
-        gantry.set_serial_timeout(0.1)
+        gantry.set_serial_timeout(0.05)
 
-    # Load protocol
+    # Load protocol (mock instruments when --mock or --skip-force-sensor)
     protocol, context = setup_protocol(
         str(_GANTRY_YAML), str(_DECK_YAML), str(_BOARD_YAML),
-        str(_PROTOCOL_YAML), gantry=gantry, mock_mode=mock,
+        str(_PROTOCOL_YAML), gantry=gantry, mock_mode=mock or skip_force_sensor,
     )
 
     # Filter wells if specified in experiment config
@@ -100,6 +112,8 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
     print(f"Campaign {context.campaign_id} created in {db_path}")
 
     # Connect instruments and run
+    if skip_force_sensor:
+        print("Using mock force sensor (--skip-force-sensor).")
     print("Connecting force sensor...")
     context.board.connect_instruments()
     print("Starting measurement.")
@@ -127,4 +141,8 @@ def run(mock: bool = False, skip_home: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    run(mock="--mock" in sys.argv, skip_home="--no-home" in sys.argv)
+    run(
+        mock="--mock" in sys.argv,
+        skip_home="--no-home" in sys.argv,
+        skip_force_sensor="--skip-force-sensor" in sys.argv,
+    )
