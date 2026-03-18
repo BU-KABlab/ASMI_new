@@ -5,48 +5,52 @@
 gantry:
   safe_z: -50.0
   idle_timeout: 10.0
+  unlock_delay: 1.0   # seconds to wait after $X (reduce to speed up startup)
+  # Optional: speed override — sent to GRBL after connect (increase to speed up)
+  homing_feed: 2000    # $24 homing locate feed rate (mm/min)
+  homing_seek: 2000    # $25 homing search seek rate (mm/min)
+  max_rate: 2000       # $110–$112 X/Y/Z max rate (mm/min)
+  acceleration: 500    # $120–$122 X/Y/Z acceleration (mm/s²)
 
 system:
-  k_system: 64.27
+  k_system: 64.27 # assumed spring constant of the system
 
 measurement:
-  z_target: -90.0
+  z_target: -83.0
   step_size: 0.01
   force_limit: 10.0
   well_top_z: -73.0
-  well_bottom_z: -27.2
+  well_bottom_z: -84.2
   baseline_samples: 10
   measure_with_return: false
 
 wells:
-  wells_to_test:
-    - E5
-    - E6
-    - E7
-  lock_xy_single_spot: false
-  lock_xy_position: null
+  wells_to_test: # if None, all wells will be measured
+    - A2
+  lock_xy_single_spot: false # if true, the gantry will only move to the specified lock_xy_position
+  lock_xy_position: null # if lock_xy_single_spot is true, the gantry will move to this position
 
 analysis:
-  contact_method: retrospective
-  fit_method: hertzian
-  apply_system_correction: false
-  retrospective_threshold: 0.01
-  max_depth: 0.5
-  min_depth: 0.24
-  poisson_ratio: 0.5
-  apply_force_correction: true
-  iterative_d0_refinement: true
-  use_legacy_height: true
-  legacy_height_step_mm: 0.01
+  contact_method: retrospective # "retrospective" or "extrapolation" or "simple_threshold" or "baseline_threshold"
+  fit_method: hertzian # "hertzian" or "linear", linear is for spring constant, hertzian is for elastic modulus
+  apply_system_correction: true # if true, apply system compliance correction (depth correction using k_system)
+  apply_force_correction: true # if true, apply geometry force correction (F/(c*d^b)) for well confinement
+  iterative_d0_refinement: true # if true, iterative d0 refinement until |d0|<0.01 mm (Hertzian only)
+  retrospective_threshold: 0.01 # if contact_method is "retrospective", force threshold (N) for contact detection
+  max_depth: 0.5 # maximum depth (mm) for fitting
+  min_depth: 0.24 # minimum depth (mm) for Hertzian fitting
+  poisson_ratio: 0.5 # Poisson's ratio of the material
+  use_legacy_height: false # if true, use legacy approx_height formula for (b,c) lookup
+  legacy_height_step_mm: 0.02 # step size (mm) for legacy height formula
 
 workflow:
-  do_measure: false
+  do_measure: false # if true, the measurement will be performed. If false, the measurement will be skipped and the analysis will be performed on the existing data.
   home_before_measure: true
-  generate_heatmap: true
-  move_to_pickup: false
-  pickup_position: [0.0, 0.0, 0.0]
-  existing_run_folder: run_774_20260206_133925
-  existing_measured_with_return: false
+  generate_heatmap: true # if true, the heatmap will be generated
+  move_to_pickup: false # if true, the gantry will move to the pickup position
+  pickup_position: [0.0, 0.0, 0.0] # the position to move to for pickup
+  existing_run_folder: run_774_20260206_133925 # the folder name of the existing data
+  existing_measured_with_return: false # if true, the existing data has return measurements
 
 paths:
   database: data/asmi_data.db

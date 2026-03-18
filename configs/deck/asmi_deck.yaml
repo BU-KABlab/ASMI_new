@@ -11,12 +11,12 @@ labware:
     columns: 12
     calibration:
       a1:
-        x: -149.0
-        y: -154.5
-        z: -50.0
+        x: -49.7
+        y: -236.8
+        z: -50.0 # z_initial (z_safe)
       a2:
-        x: -140.0
-        y: -154.5
-        z: -50.0
-    x_offset_mm: 9.0
-    y_offset_mm: -9.0
+        x: -58.7
+        y: -236.8
+        z: -50.0 # z_initial (z_safe)
+    x_offset_mm: -9.0
+    y_offset_mm: 9.0
