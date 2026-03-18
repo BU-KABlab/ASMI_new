@@ -3,15 +3,14 @@
 ASMI runner — uses PANDA_CORE protocol engine for measurement and SQL persistence.
 
 Usage:
-    python3 main_asmi.py          # real hardware, configs from configs/
+    python3 main_asmi.py          # real hardware
     python3 main_asmi.py --mock   # offline dry run with mock instruments
 
-All configuration lives in YAML files under configs/:
-    gantry/asmi_gantry.yaml   — CNC serial port, working volume, GRBL settings
-    deck/asmi_deck.yaml       — well plate geometry and calibration
-    board/asmi_board.yaml     — ASMI instrument with indentation parameters
-    protocol/asmi_indentation.yaml — scan protocol (method: indentation)
-    experiment.yaml           — analysis params, paths, workflow flags
+Configuration lives in YAML files under configs/:
+    gantry/asmi_gantry.yaml          — CNC serial port, working volume, GRBL
+    deck/asmi_deck.yaml              — well plate geometry and calibration
+    board/asmi_board.yaml            — ASMI instrument with indentation params
+    protocol/asmi_indentation.yaml   — scan protocol (method: indentation)
 """
 
 from __future__ import annotations
@@ -27,31 +26,21 @@ from protocol_engine.setup import setup_protocol
 from data.data_store import DataStore
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
-
-# ── Config paths ──────────────────────────────────────────────────────────
 _CONFIGS = _PROJECT_ROOT / 'configs'
 _GANTRY_YAML = _CONFIGS / 'gantry' / 'asmi_gantry.yaml'
 _DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
 _BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
-_MOCK_BOARD_YAML = _CONFIGS / 'board' / 'mock_asmi_board.yaml'
 _PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation.yaml'
-_EXPERIMENT_YAML = _CONFIGS / 'experiment.yaml'
+_DB_PATH = _PROJECT_ROOT / 'data' / 'asmi_data.db'
 
 
 def run(mock: bool = False) -> None:
     """Run the ASMI indentation protocol with SQL persistence.
 
     Args:
-        mock: If True, use OfflineGantry + MockASMI (no hardware).
+        mock: If True, use Gantry(offline=True) + mock instruments.
     """
-    with open(_EXPERIMENT_YAML) as f:
-        cfg = yaml.safe_load(f)
-
-    paths = cfg.get('paths', {})
-    db_path = paths.get('database', 'data/asmi_data.db')
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-    board_yaml = _MOCK_BOARD_YAML if mock else _BOARD_YAML
+    os.makedirs(_DB_PATH.parent, exist_ok=True)
 
     # Build gantry
     if mock:
@@ -62,26 +51,25 @@ def run(mock: bool = False) -> None:
         gantry = Gantry(config=gantry_config)
         gantry.connect()
         gantry.unlock()
-        if cfg.get('workflow', {}).get('home_before_measure', True):
-            gantry.home()
+        gantry.home()
 
-    # Load protocol
+    # Load protocol (mock_mode swaps asmi -> mock_asmi in board loader)
     protocol, context = setup_protocol(
-        str(_GANTRY_YAML), str(_DECK_YAML), str(board_yaml),
-        str(_PROTOCOL_YAML), gantry=gantry,
+        str(_GANTRY_YAML), str(_DECK_YAML), str(_BOARD_YAML),
+        str(_PROTOCOL_YAML), gantry=gantry, mock_mode=mock,
     )
 
     # DataStore
-    store = DataStore(db_path=db_path)
+    store = DataStore(db_path=str(_DB_PATH))
     context.data_store = store
     context.campaign_id = store.create_campaign(
-        description=cfg.get('description', 'ASMI indentation run'),
+        description='ASMI indentation run',
         deck_config=str(_DECK_YAML),
-        board_config=str(board_yaml),
+        board_config=str(_BOARD_YAML),
         gantry_config=str(_GANTRY_YAML),
         protocol_config=str(_PROTOCOL_YAML),
     )
-    print(f"Campaign {context.campaign_id} created in {db_path}")
+    print(f"Campaign {context.campaign_id} created in {_DB_PATH}")
 
     # Connect instruments and run
     context.board.connect_instruments()
@@ -104,7 +92,7 @@ def run(mock: bool = False) -> None:
                 pass
             gantry.disconnect()
         store.close()
-        print(f"Data persisted to {db_path}")
+        print(f"Data persisted to {_DB_PATH}")
 
 
 if __name__ == "__main__":
