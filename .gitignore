@@ -5,6 +5,7 @@ results/plots/**
 !results/plots/.gitkeep
 results/calibration/**
 results/force_measurements/**
+results/well_measurements/**
 results/*.png
 results/*.md
 
