@@ -1,13 +1,6 @@
-# Results (keep directory, ignore contents)
-results/measurements/**
-!results/measurements/.gitkeep
-results/plots/**
-!results/plots/.gitkeep
-results/calibration/**
-results/force_measurements/**
-results/well_measurements/**
-results/*.png
-results/*.md
+# Data and results
+data/
+results/
 
 # Archived files (local only)
 archived/
