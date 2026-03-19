@@ -13,7 +13,7 @@ gantry:
   acceleration: 500    # $120–$122 X/Y/Z acceleration (mm/s²)
 
 system:
-  k_system: 64.27 # assumed spring constant of the system
+  k_system: None # assumed spring constant of the system. If is None, it will be loaded from the spring_constant_data.csv file in the src folder.
 
 measurement:
   z_target: -83.0
