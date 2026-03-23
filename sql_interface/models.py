@@ -38,6 +38,8 @@ sharc = Table(
     Column("status", String(255)),
     Column("time_started", DateTime),
     Column("time_completed", DateTime),
+    Column("next_arm_from", String(255)),
+    Column("next_arm_to", String(255)),
 )
 
 arm_tasks = Table(
@@ -62,6 +64,8 @@ asmi = Table(
     Column("status", String(255)),
     Column("time_started", DateTime),
     Column("time_completed", DateTime),
+    Column("next_arm_from", String(255)),
+    Column("next_arm_to", String(255)),
 )
 
 storage_start_log = Table(
