@@ -4,9 +4,14 @@
 # method_kwargs passthrough and named-position moves.
 
 positions:
+  safe_z: [0.0, 0.0, -50.0]
   pickup: [0.0, 0.0, -50.0]
 
 protocol:
+  - move:
+      instrument: asmi
+      position: safe_z
+
   - scan:
       plate: plate
       instrument: asmi
