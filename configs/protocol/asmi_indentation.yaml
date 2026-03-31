@@ -1,9 +1,26 @@
 # ASMI indentation protocol.
 # Scans the well plate, performing step-by-step indentation at each well.
-# The ASMI instrument's indentation method handles Z stepping and force reading.
+# Uses panda-core protocol engine (feature/uv-curing-instrument) for
+# method_kwargs passthrough and named-position moves.
+
+positions:
+  pickup: [0.0, 0.0, -50.0]
 
 protocol:
   - scan:
       plate: plate
       instrument: asmi
       method: indentation
+      method_kwargs:
+        z_target: -83.0
+        step_size: 0.01
+        force_limit: 10.0
+        well_top_z: -73.0
+        well_bottom_z: -84.2
+        baseline_samples: 10
+        measure_with_return: false
+        safe_z: -50.0
+
+  - move:
+      instrument: asmi
+      position: pickup

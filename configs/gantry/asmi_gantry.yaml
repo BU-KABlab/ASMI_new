@@ -14,6 +14,14 @@ working_volume:
   z_min: -80.0
   z_max: 0.0
 
+safe_z: -50.0
+idle_timeout: 10.0
+unlock_delay: 1.0
+homing_feed: 2000
+homing_seek: 2000
+max_rate: 2000
+acceleration: 500
+
 grbl_settings:
   homing_enable: true
   steps_per_mm_x: 400.0

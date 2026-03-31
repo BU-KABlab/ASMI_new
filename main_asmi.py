@@ -13,7 +13,7 @@ Configuration lives in YAML files under configs/:
     deck/asmi_deck.yaml              — well plate geometry and calibration
     board/asmi_board.yaml            — ASMI instrument with indentation params
     protocol/asmi_indentation.yaml   — scan protocol (method: indentation)
-    experiment.yaml                  — wells, analysis, workflow, speed overrides
+    analysis.yaml                    — wells, analysis, workflow
 
 Troubleshooting:
     • GRBL Alarm: Unlock ($X) and home ($H) clear it. The runner does both;
@@ -43,7 +43,7 @@ _GANTRY_YAML = _CONFIGS / 'gantry' / 'asmi_gantry.yaml'
 _DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
 _BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
 _PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation.yaml'
-_EXPERIMENT_YAML = _CONFIGS / 'experiment.yaml'
+_EXPERIMENT_YAML = _CONFIGS / 'analysis.yaml'
 
 
 def run(

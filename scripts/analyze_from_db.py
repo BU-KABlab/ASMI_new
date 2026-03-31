@@ -27,7 +27,7 @@ from src.analysis import IndentationAnalyzer
 from src.plot import ASMIPlotter
 
 DB_PATH = ROOT / "data" / "asmi_data.db"
-EXPERIMENT_YAML = ROOT / "configs" / "experiment.yaml"
+EXPERIMENT_YAML = ROOT / "configs" / "analysis.yaml"
 
 
 def unpack_blob(blob: bytes) -> tuple[float, ...]:
