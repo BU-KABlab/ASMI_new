@@ -10,11 +10,3 @@ instruments:
     # Sensor hardware
     force_threshold: -50
     sensor_channels: [1]
-    # Indentation parameters
-    z_target: -90.0
-    step_size: 0.01
-    force_limit: 10.0
-    well_top_z: -73.0
-    safe_z: -50.0
-    baseline_samples: 10
-    idle_timeout: 10.0

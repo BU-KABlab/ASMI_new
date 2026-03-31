@@ -24,9 +24,9 @@ acceleration: 500
 
 grbl_settings:
   homing_enable: true
-  steps_per_mm_x: 400.0
-  steps_per_mm_y: 400.0
-  steps_per_mm_z: 400.0
-  max_travel_x: 400.0
-  max_travel_y: 300.0
+  steps_per_mm_x: 800.0
+  steps_per_mm_y: 800.0
+  steps_per_mm_z: 800.0
+  max_travel_x: 300.0
+  max_travel_y: 200.0
   max_travel_z: 80.0
