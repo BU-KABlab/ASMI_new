@@ -5,6 +5,10 @@
 system:
   k_system: None # assumed spring constant of the system. If is None, it will be loaded from the spring_constant_data.csv file in the src folder.
 
+measurement:
+  well_bottom_z: -84.2 # used for geometry correction in analysis
+  measure_with_return: false # if true, existing data has return measurements
+
 wells:
   wells_to_test: # if None, all wells will be measured
     - A2
