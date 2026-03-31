@@ -58,8 +58,6 @@ def run(
     db_path = cfg.get('paths', {}).get('database', 'data/asmi_data.db')
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    gantry_cfg = cfg.get('gantry', {})
-
     # Build gantry
     if mock:
         gantry = Gantry(offline=True)
@@ -70,17 +68,7 @@ def run(
         gantry.connect()
         gantry.set_serial_timeout(10)
         gantry.unlock()
-        gantry.configure_speeds(
-            homing_feed=gantry_cfg.get('homing_feed'),
-            homing_seek=gantry_cfg.get('homing_seek'),
-            max_rate=gantry_cfg.get('max_rate'),
-            acceleration=gantry_cfg.get('acceleration'),
-        )
-        time.sleep(gantry_cfg.get('unlock_delay', 1.0))
-        if not skip_home and cfg.get('workflow', {}).get('home_before_measure', True):
-            gantry.home()
-            gantry.zero_coordinates()
-        gantry.set_safe_z(gantry_cfg.get('safe_z', -50.0))
+        time.sleep(1.0)
         gantry.set_serial_timeout(0.05)
 
     # Load protocol (mock instruments when --mock or --skip-force-sensor)
@@ -130,11 +118,6 @@ def run(
     finally:
         context.board.disconnect_instruments()
         if not mock:
-            try:
-                gantry.set_serial_timeout(5)
-                gantry.home()
-            except Exception:
-                pass
             gantry.disconnect()
         store.close()
         print(f"Data persisted to {db_path}")

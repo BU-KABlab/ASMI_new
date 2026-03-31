@@ -1,17 +1,24 @@
 # ASMI indentation protocol.
 # Scans the well plate, performing step-by-step indentation at each well.
-# Uses panda-core protocol engine (feature/uv-curing-instrument) for
-# method_kwargs passthrough and named-position moves.
+# Uses panda-core protocol engine (feature/uv-curing-instrument).
+#
+# Flow per well (handled by scan + indentation method):
+#   1. Move to well XY at safe_z (measurement_height=0, deck Z=-50)
+#   2. Descend to well_top_z, take baseline force readings
+#   3. Step toward z_target, reading force at each step
+#   4. Return to safe_z
+#
+# Protocol-level flow:
+#   home → scan all wells → move safe_z → home
 
 positions:
   safe_z: [0.0, 0.0, -50.0]
-  pickup: [0.0, 0.0, -50.0]
 
 protocol:
-  - move:
-      instrument: asmi
-      position: safe_z
+  # Home the gantry and zero coordinates
+  - home:
 
+  # Scan all wells: move to each well, run indentation, return to safe_z
   - scan:
       plate: plate
       instrument: asmi
@@ -24,6 +31,10 @@ protocol:
         baseline_samples: 10
         safe_z: -50.0
 
+  # Return to safe Z after scan
   - move:
       instrument: asmi
-      position: pickup
+      position: safe_z
+
+  # Home the gantry
+  - home:
