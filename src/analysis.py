@@ -61,7 +61,7 @@ class IndentationAnalyzer:
     """Analyze indentation data to calculate elastic modulus using Hertzian fitting."""
     
     # Physical constants
-    SPHERE_RADIUS = 0.0025  # m
+    SPHERE_RADIUS = 0.0009145  # m
     SPHERE_E = 1.8e11       # Pa
     SPHERE_NU = 0.28
     

@@ -41,7 +41,7 @@ class AnalysisResult:
 class ASMIPlotter:
     """Handles all plotting functions for ASMI analysis"""
     
-    def __init__(self, font_size: float = 10.0):
+    def __init__(self, font_size: float = 14.0):
         """Initialize plotter.
         
         Args:
@@ -377,212 +377,20 @@ class ASMIPlotter:
     def plot_results(self, result: AnalysisResult, save_plot: bool = True, run_folder: Optional[str] = None, method: Optional[str] = None, direction_label: Optional[str] = None):
         """Plot analysis results and save to results/plots/.
 
-        If adjusted_forces are available, plot data points and fit.
-        If not, plot fit-only using the available depth range.
+        For Hertzian fits with system correction, three progressive plots are saved per well:
+          _v1_nofc              : no force correction data + fit only
+          _v2_nofc_orig         : no force correction + original (with force correction) fit
+          _system_corrected     : no force correction + original + system corrected fit
+        For linear fits or Hertzian without system correction, a single plot is saved.
         """
+        plt.rcParams['font.family'] = 'Arial'
         fs = self.font_size
         depths_ok = bool(getattr(result, 'depth_in_range', None)) and len(result.depth_in_range) > 0
         forces_avail = hasattr(result, 'adjusted_forces') and bool(getattr(result, 'adjusted_forces', None))
-
-        # Determine if this is a linear-fit result (spring constant) or Hertzian
         is_linear = bool(getattr(result, 'spring_constant', None)) and getattr(result, 'spring_constant') not in (None, 0)
-        
-        # Check if system compliance correction was used (for Hertzian fits only)
         use_system_correction = getattr(result, 'corrected_depths', None) is not None and not is_linear
-        
-        # Initialize variables to avoid UnboundLocalError
-        shifted_depths_original = None
-        shifted_depths_corrected = None
 
-        if not depths_ok:
-            # Summary plot only
-            plt.figure(figsize=(10, 6))
-            if is_linear:
-                k_val = float(getattr(result, 'spring_constant', 0))
-                b_val = float(getattr(result, 'linear_intercept', 0))
-                r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
-                summary_text = f'Well {result.well}\nF = {k_val:.3f}*d + {b_val:.3f} N\nR² = {r2_val:.3f}'
-            else:
-                summary_text = f'Well {result.well}\nE = {result.elastic_modulus} Pa\nA = {result.fit_A:.3f}\nd0 = {result.fit_d0:.3f} mm\nR² = {result.fit_quality}'
-            plt.text(0.5, 0.5, summary_text,
-                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=fs + 2,
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
-            plt.xlim(0, 1)
-            plt.ylim(0, 1)
-            plt.axis('off')
-            plt.title(f'Well {result.well}: Analysis Summary (No Detailed Data)', fontsize=fs + 2)
-        else:
-            plt.figure(figsize=(10, 6))
-            depths_array = np.array(result.depth_in_range)
-            forces_array = np.array(result.adjusted_forces) if forces_avail else np.array([])
-            fit_min = float(result.depth_range[0]) if result.depth_range else (min(result.depth_in_range) if result.depth_in_range else 0)
-            fit_max = float(result.depth_range[1]) if result.depth_range else (max(result.depth_in_range) if result.depth_in_range else 2)
-            
-            if is_linear:
-                # Linear fit uses direct depths (already from contact), no shift needed
-                shifted_depths_all = np.maximum(depths_array, 0)
-                max_depth = float(np.max(shifted_depths_all)) if shifted_depths_all.size > 0 else 2.0
-                fit_depths = np.linspace(0, max_depth, 100)
-                k_val = float(getattr(result, 'spring_constant', 0))
-                # Get intercept from fit parameters if available
-                b_val = float(getattr(result, 'linear_intercept', 0))
-                fit_forces = k_val * fit_depths + b_val
-            else:
-                # Hertzian: Handle system compliance correction
-                corrected_depths = getattr(result, 'corrected_depths', None)
-                
-                if use_system_correction:
-                    print("📊 Plotting both original and system-corrected fits")
-                    # Use corrected depths for the corrected fit
-                    depths_array_corrected = np.array(corrected_depths)
-                    
-                    # Fit original data (without system correction) if we have forces
-                    if forces_avail and len(forces_array) > 0 and len(depths_array) == len(forces_array):
-                        lb = [0.0, -0.1]
-                        ub = [np.inf, 2.0]
-                        fit_original = self._analyzer.fit_hertz_model(depths_array, forces_array, bounds=(lb, ub))
-                        
-                        if fit_original.params is not None:
-                            A_original = float(fit_original.params[0])
-                            d0_original = float(fit_original.params[1])
-                            E_original = self._analyzer.adjust_E(self._analyzer.find_E(A_original, result.poisson_ratio))
-                            # Calculate R² using analyzer's method
-                            mask = depths_array > d0_original
-                            if np.sum(mask) > 5:
-                                vd = depths_array[mask]
-                                vf = forces_array[mask]
-                                pred = A_original * (vd - d0_original) ** 1.5
-                                r2_original = self._analyzer.calculate_r_squared(vf, pred)
-                            else:
-                                r2_original = 0.0
-                        else:
-                            A_original = result.fit_A
-                            d0_original = result.fit_d0
-                            E_original = result.elastic_modulus
-                            r2_original = result.fit_quality
-                    else:
-                        # Fallback to using corrected fit parameters if we can't fit original
-                        A_original = result.fit_A
-                        d0_original = result.fit_d0
-                        E_original = result.elastic_modulus
-                        r2_original = result.fit_quality
-                    
-                    # Use corrected fit parameters from result
-                    A_corrected = result.fit_A
-                    d0_corrected = result.fit_d0
-                    E_corrected = result.elastic_modulus
-                    r2_corrected = result.fit_quality
-                    
-                    # Shift depths by their respective d0 values
-                    shifted_depths_original = np.maximum(depths_array - d0_original, 0)
-                    shifted_depths_corrected = np.maximum(depths_array_corrected - d0_corrected, 0)
-                    
-                    # Fit curve domains
-                    max_depth_original = float(np.max(shifted_depths_original)) if shifted_depths_original.size > 0 else 2.0
-                    max_depth_corrected = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
-                    max_depth = max(max_depth_original, max_depth_corrected)
-                    
-                    fit_depths_original = np.linspace(0, max_depth_original, 100)
-                    fit_depths_corrected = np.linspace(0, max_depth_corrected, 100)
-                    fit_forces_original = A_original * (fit_depths_original) ** 1.5
-                    fit_forces_corrected = A_corrected * (fit_depths_corrected) ** 1.5
-                else:
-                    # No correction, use original depths
-                    depths_array_corrected = depths_array
-                    shifted_depths_corrected = np.maximum(depths_array - result.fit_d0, 0)
-                    shifted_depths_original = None
-                    max_depth = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
-                    fit_depths = np.linspace(0, max_depth, 100)
-                    fit_forces = result.fit_A * (fit_depths) ** 1.5
-
-            # Plot 0–max_depth data and its Hertzian fit (no force correction) when available
-            depth_full = getattr(result, 'depth_full', None)
-            forces_full = getattr(result, 'forces_full', None)
-            fit_A_0_max = getattr(result, 'fit_A_0_max', None)
-            fit_d0_0_max = getattr(result, 'fit_d0_0_max', None)
-            if not is_linear and depth_full and forces_full and len(depth_full) > 0 and len(forces_full) == len(depth_full):
-                d_full_arr = np.array(depth_full)
-                f_full_arr = np.array(forces_full)
-                shifted_full = np.maximum(d_full_arr - (fit_d0_0_max if fit_d0_0_max is not None else result.fit_d0), 0)
-                plt.scatter(shifted_full, f_full_arr, alpha=0.5, s=20, color='gray', 
-                            label=f'0–{fit_max:.2f} mm (no force correction)')
-                if fit_A_0_max is not None and fit_d0_0_max is not None:
-                    max_d_full = float(np.max(d_full_arr)) if d_full_arr.size > 0 else fit_max
-                    x_max = max(0, max_d_full - fit_d0_0_max)
-                    fit_depths_0_max = np.linspace(0, x_max, 100)
-                    fit_forces_0_max = fit_A_0_max * (fit_depths_0_max) ** 1.5
-                    E_0_max = getattr(result, 'elastic_modulus_0_max', None)
-                    r2_0_max = getattr(result, 'fit_quality_0_max', None)
-                    lbl = f'0–{fit_max:.2f} mm fit (no FC): E={E_0_max/1e6:.2f} MPa' if E_0_max else f'0–{fit_max:.2f} mm fit'
-                    if r2_0_max is not None:
-                        lbl += f', R²={r2_0_max:.3f}'
-                    plt.plot(fit_depths_0_max, fit_forces_0_max, '--', color='gray', linewidth=1.5, label=lbl)
-            if forces_avail:
-                if is_linear:
-                    # For linear fits, plot the actual data points
-                    if shifted_depths_all.size > 0 and forces_array.size == shifted_depths_all.size:
-                        plt.scatter(shifted_depths_all, forces_array, alpha=0.6, s=30, 
-                                  color='blue', label='Measured Data')
-                elif use_system_correction and shifted_depths_original is not None and shifted_depths_corrected is not None:
-                    # Plot both original and corrected data when system correction is used
-                    if shifted_depths_original.size > 0 and forces_array.size == shifted_depths_original.size:
-                        plt.scatter(shifted_depths_original, forces_array, alpha=0.6, s=30, 
-                                  color='blue', label=f'Original ({fit_min:.2f}–{fit_max:.2f} mm)')
-                    if shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
-                        plt.scatter(shifted_depths_corrected, forces_array, alpha=0.6, s=40, 
-                                  color='purple', label=f'System Corrected ({fit_min:.2f}–{fit_max:.2f} mm)')
-                else:
-                    # Only plot corrected data when no system correction
-                    if shifted_depths_corrected is not None and shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
-                        plt.scatter(shifted_depths_corrected, forces_array, alpha=0.6, label='Corrected Data (shifted)')
-            else:
-                # No forces; visualize depth support at y=0 only
-                if is_linear:
-                    # For linear fits, plot depth points at y=0
-                    if shifted_depths_all.size > 0:
-                        plt.scatter(shifted_depths_all, np.zeros_like(shifted_depths_all), s=10, alpha=0.6, 
-                                  color='blue', label='Depth points')
-                elif use_system_correction and shifted_depths_original is not None and shifted_depths_corrected is not None:
-                    # Plot both original and corrected depth points
-                    if shifted_depths_original.size > 0:
-                        plt.scatter(shifted_depths_original, np.zeros_like(shifted_depths_original), s=8, alpha=0.6, 
-                                  color='blue', label='Original Depth points (shifted)')
-                    if shifted_depths_corrected.size > 0:
-                        plt.scatter(shifted_depths_corrected, np.zeros_like(shifted_depths_corrected), s=12, alpha=0.6, 
-                                  color='purple', label='System Corrected Depth points (shifted)')
-                else:
-                    if shifted_depths_corrected is not None and shifted_depths_corrected.size > 0:
-                        plt.scatter(shifted_depths_corrected, np.zeros_like(shifted_depths_corrected), s=10, alpha=0.6, label='Depth points (shifted)')
-
-            # Draw the fitted curve and labels
-            if is_linear:
-                plt.plot(fit_depths, fit_forces, 'r-', label=f'Linear Fit (k={k_val:.3f}, b={b_val:.3f})')
-                plt.xlabel('Indentation Depth (mm)', fontsize=fs)
-                plt.ylabel('Force (N)', fontsize=fs)
-                dir_title = f" ({direction_label})" if direction_label else ""
-                r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
-                plt.title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}', fontsize=fs + 2)
-            else:
-                if use_system_correction:
-                    # Plot both fits in different colors
-                    plt.plot(fit_depths_original, fit_forces_original, 'b-', linewidth=2, 
-                            label=f'Original Fit: E = {E_original/1e6:.2f} MPa, A = {A_original:.3f}, d0 = {d0_original:.3f} mm, R² = {r2_original:.3f}')
-                    plt.plot(fit_depths_corrected, fit_forces_corrected, 'r-', linewidth=2,
-                            label=f'System Corrected Fit: E = {E_corrected/1e6:.2f} MPa, A = {A_corrected:.3f}, d0 = {d0_corrected:.3f} mm, R² = {r2_corrected:.3f}')
-                else:
-                    # Single fit when no system correction
-                    plt.plot(fit_depths, fit_forces, 'r-', linewidth=2, 
-                            label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, A = {result.fit_A:.3f}, d0 = {result.fit_d0:.3f} mm, R² = {result.fit_quality:.3f}')
-                
-                plt.xlabel('Indentation Depth (mm)', fontsize=fs)
-                plt.ylabel('Force (N)', fontsize=fs)
-                # Simplified title: just "Well E5 measurement" (or well name)
-                well_name = result.well.upper()
-                plt.title(f'Well {well_name} measurement', fontsize=fs + 2)
-            plt.legend(fontsize=max(6, fs - 2))
-            plt.tick_params(axis='both', labelsize=max(6, fs - 2))
-            plt.grid(True, alpha=0.3)
-
+        # ── Resolve save folder once ─────────────────────────────────────────
         if save_plot:
             plots_dir = "results/plots"
             os.makedirs(plots_dir, exist_ok=True)
@@ -595,13 +403,23 @@ class ASMIPlotter:
             method_lower = (method or "").lower().replace(" ", "_")
             method_suffix = f"_{method_lower}" if method_lower else ""
             dir_suffix = f"_{direction_label.lower()}" if direction_label else ""
-            # Add suffix when system compliance correction is applied (Hertzian only)
-            correction_suffix = "_system_corrected" if (not is_linear and getattr(result, 'corrected_depths', None) is not None) else ""
-            plot_filename = os.path.join(run_folder_plots, f"{result.well}_analysis{method_suffix}{dir_suffix}{correction_suffix}.png")
-            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            print(f"💾 Plot saved to: {plot_filename}")
+        else:
+            run_folder_plots = method_suffix = dir_suffix = ""
 
+        def _savefig(fig, name_suffix):
+            if not save_plot:
+                return
+            path = os.path.join(run_folder_plots, f"{result.well}_analysis{method_suffix}{dir_suffix}{name_suffix}.png")
+            fig.savefig(path, dpi=300, bbox_inches='tight')
+            print(f"💾 Plot saved to: {path}")
+
+        def _write_summary_txt():
+            if not save_plot:
+                return
             summary_filename = os.path.join(run_folder_plots, f"{result.well}_summary.txt")
+            def _fmt(v, fmt_str=None):
+                if v is None: return 'N/A'
+                return f"{v:{fmt_str}}" if fmt_str else str(v)
             with open(summary_filename, 'w') as f:
                 f.write(f"ASMI Analysis Results for Well {result.well}\n")
                 f.write("=" * 50 + "\n")
@@ -617,9 +435,6 @@ class ASMIPlotter:
                     r2_0 = getattr(result, 'fit_quality_0_max', None)
                     A_0 = getattr(result, 'fit_A_0_max', None)
                     d0_0 = getattr(result, 'fit_d0_0_max', None)
-                    def _fmt(v, fmt_str=None):
-                        if v is None: return 'N/A'
-                        return f"{v:{fmt_str}}" if fmt_str else str(v)
                     f.write(f"Elastic Modulus (0–max_depth, no force correction): {_fmt(E_0)}{' Pa' if E_0 is not None else ''}\n")
                     f.write(f"  Uncertainty: ±{_fmt(u_0)} Pa, R²={_fmt(r2_0, '.3f')}, A={_fmt(A_0, '.3f')}, d0={_fmt(d0_0, '.3f')}\n")
                     E_fc = getattr(result, 'elastic_modulus_min_max_fc', None)
@@ -633,15 +448,240 @@ class ASMIPlotter:
                     f.write(f"  Uncertainty: ±{_fmt(u_fc)} Pa, R²={_fmt(r2_fc, '.3f')}, A={_fmt(A_fc, '.3f')}, d0={_fmt(d0_fc, '.3f')}\n")
                 f.write(f"Poisson's Ratio: {result.poisson_ratio}\n")
                 f.write(f"Sample Height: {result.sample_height} mm\n")
-                if is_linear:
-                    f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
-                else:
-                    f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
+                f.write(f"Depth Range: {result.depth_range[0]:.2f}-{result.depth_range[1]:.2f} mm\n")
                 f.write(f"Contact Point: Z={result.contact_z:.3f} mm, Force={result.contact_force:.3f} N\n")
                 f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             print(f"💾 Summary saved to: {summary_filename}")
 
-        plt.close()
+        # ── No-data fallback ─────────────────────────────────────────────────
+        if not depths_ok:
+            fig = plt.figure(figsize=(5, 4))
+            if is_linear:
+                k_val = float(getattr(result, 'spring_constant', 0))
+                b_val = float(getattr(result, 'linear_intercept', 0))
+                r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
+                summary_text = f'Well {result.well}\nF = {k_val:.3f}*d + {b_val:.3f} N\nR² = {r2_val:.3f}'
+            else:
+                summary_text = f'Well {result.well}\nE = {result.elastic_modulus} Pa\nA = {result.fit_A:.3f}\nd0 = {result.fit_d0:.3f} mm\nR² = {result.fit_quality}'
+            plt.text(0.5, 0.5, summary_text,
+                    ha='center', va='center', transform=plt.gca().transAxes, fontsize=fs + 2,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.7))
+            plt.xlim(0, 1); plt.ylim(0, 1); plt.axis('off')
+            plt.title(f'Well {result.well}: Analysis Summary (No Detailed Data)', fontsize=fs + 2)
+            correction_suffix = "_system_corrected" if use_system_correction else ""
+            _savefig(fig, correction_suffix)
+            _write_summary_txt()
+            plt.close(fig)
+            return
+
+        # ── Common data prep ─────────────────────────────────────────────────
+        depths_array = np.array(result.depth_in_range)
+        forces_array = np.array(result.adjusted_forces) if forces_avail else np.array([])
+        fit_min = float(result.depth_range[0]) if result.depth_range else (min(result.depth_in_range) if result.depth_in_range else 0)
+        fit_max = float(result.depth_range[1]) if result.depth_range else (max(result.depth_in_range) if result.depth_in_range else 2)
+
+        # ── Linear fit: single plot ──────────────────────────────────────────
+        if is_linear:
+            shifted_depths_all = np.maximum(depths_array, 0)
+            max_depth = float(np.max(shifted_depths_all)) if shifted_depths_all.size > 0 else 2.0
+            fit_depths = np.linspace(0, max_depth, 100)
+            k_val = float(getattr(result, 'spring_constant', 0))
+            b_val = float(getattr(result, 'linear_intercept', 0))
+            fit_forces = k_val * fit_depths + b_val
+            fig, ax = plt.subplots(figsize=(5, 4))
+            if forces_avail and shifted_depths_all.size > 0 and forces_array.size == shifted_depths_all.size:
+                ax.scatter(shifted_depths_all, forces_array, alpha=0.6, s=30, color='blue', label='Measured Data')
+            elif shifted_depths_all.size > 0:
+                ax.scatter(shifted_depths_all, np.zeros_like(shifted_depths_all), s=10, alpha=0.6,
+                           color='blue', label='Depth points')
+            dir_title = f" ({direction_label})" if direction_label else ""
+            r2_val = float(getattr(result, 'linear_fit_quality', getattr(result, 'fit_quality', 0)))
+            ax.plot(fit_depths, fit_forces, 'r-', label=f'Linear Fit (k={k_val:.3f}, b={b_val:.3f})')
+            ax.set_xlabel('Indentation Depth (mm)', fontsize=fs)
+            ax.set_ylabel('Force (N)', fontsize=fs)
+            ax.set_title(f'Well {result.well}{dir_title}: F = {k_val:.3f}*d + {b_val:.3f}, R² = {r2_val:.3f}', fontsize=fs + 2)
+            ax.legend(bbox_to_anchor=(1.01, 1), loc='upper left', borderaxespad=0, fontsize=max(6, fs - 2))
+            ax.tick_params(axis='both', labelsize=max(6, fs - 2))
+            ax.grid(True, alpha=0.3)
+            _savefig(fig, "")
+            _write_summary_txt()
+            plt.close(fig)
+            return
+
+        # ── Hertzian: precompute no-fc (0–max_depth) series ─────────────────
+        depth_full = getattr(result, 'depth_full', None)
+        forces_full = getattr(result, 'forces_full', None)
+        fit_A_0_max = getattr(result, 'fit_A_0_max', None)
+        fit_d0_0_max = getattr(result, 'fit_d0_0_max', None)
+        E_0_max = getattr(result, 'elastic_modulus_0_max', None)
+        r2_0_max = getattr(result, 'fit_quality_0_max', None)
+        has_nofc = bool(depth_full and forces_full and len(depth_full) > 0 and len(forces_full) == len(depth_full))
+
+        if has_nofc:
+            d_full_arr = np.array(depth_full)
+            f_full_arr = np.array(forces_full)
+            _d0_nofc = fit_d0_0_max if fit_d0_0_max is not None else result.fit_d0
+            shifted_full = np.maximum(d_full_arr - _d0_nofc, 0)
+            nofc_lbl_data = f'0–{fit_max:.2f} mm (no force correction)'
+            if fit_A_0_max is not None and fit_d0_0_max is not None:
+                x_max_nofc = max(0.0, float(np.max(d_full_arr)) - fit_d0_0_max) if d_full_arr.size > 0 else fit_max
+                fit_depths_0_max = np.linspace(0, x_max_nofc, 100)
+                fit_forces_0_max = fit_A_0_max * (fit_depths_0_max) ** 1.5
+                nofc_lbl_fit = f'0–{fit_max:.2f} mm fit (no FC): E={E_0_max/1e6:.2f} MPa' if E_0_max else f'0–{fit_max:.2f} mm fit'
+                if r2_0_max is not None:
+                    nofc_lbl_fit += f', R²={r2_0_max:.3f}'
+            else:
+                fit_depths_0_max = None
+                nofc_lbl_fit = f'0–{fit_max:.2f} mm fit'
+
+        # ── Hertzian with system correction: 3 progressive plots ────────────
+        if use_system_correction:
+            print("📊 Plotting 3 progressive plots (no FC / + original / + system corrected)")
+            corrected_depths = getattr(result, 'corrected_depths', None)
+            depths_array_corrected = np.array(corrected_depths)
+
+            # Fit original data (min–max_depth, with force correction, no system correction)
+            if forces_avail and len(forces_array) > 0 and len(depths_array) == len(forces_array):
+                lb = [0.0, -0.1]; ub = [np.inf, 2.0]
+                fit_orig_res = self._analyzer.fit_hertz_model(depths_array, forces_array, bounds=(lb, ub))
+                if fit_orig_res.params is not None:
+                    A_original = float(fit_orig_res.params[0])
+                    d0_original = float(fit_orig_res.params[1])
+                    E_original = self._analyzer.adjust_E(self._analyzer.find_E(A_original, result.poisson_ratio))
+                    mask = depths_array > d0_original
+                    if np.sum(mask) > 5:
+                        vd = depths_array[mask]; vf = forces_array[mask]
+                        pred = A_original * (vd - d0_original) ** 1.5
+                        r2_original = self._analyzer.calculate_r_squared(vf, pred)
+                    else:
+                        r2_original = 0.0
+                else:
+                    A_original = result.fit_A; d0_original = result.fit_d0
+                    E_original = result.elastic_modulus; r2_original = result.fit_quality
+            else:
+                A_original = result.fit_A; d0_original = result.fit_d0
+                E_original = result.elastic_modulus; r2_original = result.fit_quality
+
+            A_corrected = result.fit_A; d0_corrected = result.fit_d0
+            E_corrected = result.elastic_modulus; r2_corrected = result.fit_quality
+
+            shifted_depths_original = np.maximum(depths_array - d0_original, 0)
+            shifted_depths_corrected = np.maximum(depths_array_corrected - d0_corrected, 0)
+
+            max_d_orig = float(np.max(shifted_depths_original)) if shifted_depths_original.size > 0 else 2.0
+            max_d_corr = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
+            fit_depths_original = np.linspace(0, max_d_orig, 100)
+            fit_depths_corrected = np.linspace(0, max_d_corr, 100)
+            fit_forces_original = A_original * (fit_depths_original) ** 1.5
+            fit_forces_corrected = A_corrected * (fit_depths_corrected) ** 1.5
+
+            # ── Infer k_system and fit SC from no-FC data ────────────────────
+            fit_nofc_sc_ok = False
+            if has_nofc:
+                diffs_ks = depths_array - depths_array_corrected
+                mask_ks = np.abs(diffs_ks) > 1e-10
+                if forces_avail and np.any(mask_ks):
+                    k_system_inferred = float(np.median(forces_array[mask_ks] / diffs_ks[mask_ks]))
+                else:
+                    k_system_inferred = self._analyzer.K_SYSTEM
+                corrected_d_nofc_arr = d_full_arr - f_full_arr / k_system_inferred
+                lb_ns = [0.0, -0.1]; ub_ns = [np.inf, 2.0]
+                fit_ns_res = self._analyzer.fit_hertz_model(corrected_d_nofc_arr, f_full_arr, bounds=(lb_ns, ub_ns))
+                if fit_ns_res.params is not None:
+                    A_nofc_sc = float(fit_ns_res.params[0])
+                    d0_nofc_sc = float(fit_ns_res.params[1])
+                    E_nofc_sc = self._analyzer.adjust_E(self._analyzer.find_E(A_nofc_sc, result.poisson_ratio))
+                    mask_ns = corrected_d_nofc_arr > d0_nofc_sc
+                    if np.sum(mask_ns) > 5:
+                        vd_ns = corrected_d_nofc_arr[mask_ns]; vf_ns = f_full_arr[mask_ns]
+                        pred_ns = A_nofc_sc * (vd_ns - d0_nofc_sc) ** 1.5
+                        r2_nofc_sc = self._analyzer.calculate_r_squared(vf_ns, pred_ns)
+                    else:
+                        r2_nofc_sc = 0.0
+                    shifted_d_nofc_sc = np.maximum(corrected_d_nofc_arr - d0_nofc_sc, 0)
+                    max_d_ns = float(np.max(shifted_d_nofc_sc)) if shifted_d_nofc_sc.size > 0 else 2.0
+                    fit_depths_nofc_sc = np.linspace(0, max_d_ns, 100)
+                    fit_forces_nofc_sc = A_nofc_sc * (fit_depths_nofc_sc) ** 1.5
+                    fit_nofc_sc_ok = True
+
+            def _make_hertz_fig(include_nofc, include_orig, include_sc, include_nofc_sc=False, nofc_color='steelblue'):
+                fig, ax = plt.subplots(figsize=(5, 4))
+                if include_nofc and has_nofc:
+                    ax.scatter(shifted_full, f_full_arr, alpha=0.6, s=50, color=nofc_color, label=nofc_lbl_data)
+                    if fit_depths_0_max is not None:
+                        ax.plot(fit_depths_0_max, fit_forces_0_max, '--', color=nofc_color, linewidth=2.5, label=nofc_lbl_fit)
+                if include_orig:
+                    if forces_avail and shifted_depths_original.size > 0 and forces_array.size == shifted_depths_original.size:
+                        ax.scatter(shifted_depths_original, forces_array, alpha=0.7, s=50, color='blue',
+                                   label=f'Original ({fit_min:.2f}–{fit_max:.2f} mm)')
+                    ax.plot(fit_depths_original, fit_forces_original, 'b-', linewidth=2.5,
+                            label=f'Original Fit: E = {E_original/1e6:.2f} MPa, A = {A_original:.3f}, d0 = {d0_original:.3f} mm, R² = {r2_original:.3f}')
+                if include_sc:
+                    if forces_avail and shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
+                        ax.scatter(shifted_depths_corrected, forces_array, alpha=0.7, s=60, color='purple',
+                                   label=f'System Corrected ({fit_min:.2f}–{fit_max:.2f} mm)')
+                    ax.plot(fit_depths_corrected, fit_forces_corrected, 'r-', linewidth=2.5,
+                            label=f'System Corrected Fit: E = {E_corrected/1e6:.2f} MPa, A = {A_corrected:.3f}, d0 = {d0_corrected:.3f} mm, R² = {r2_corrected:.3f}')
+                if include_nofc_sc and fit_nofc_sc_ok:
+                    ax.scatter(shifted_d_nofc_sc, f_full_arr, alpha=0.6, s=50, color='green',
+                               label=f'No FC (SC depths)')
+                    ax.plot(fit_depths_nofc_sc, fit_forces_nofc_sc, 'g-', linewidth=2.5,
+                            label=f'SC Fit (from no-FC): E = {E_nofc_sc/1e6:.2f} MPa, A = {A_nofc_sc:.3f}, d0 = {d0_nofc_sc:.3f} mm, R² = {r2_nofc_sc:.3f}')
+                ax.set_xlabel('Indentation Depth (mm)', fontsize=fs)
+                ax.set_ylabel('Force (N)', fontsize=fs)
+                ax.set_title(f'Well {result.well.upper()} measurement', fontsize=fs + 2)
+                ax.legend(bbox_to_anchor=(1.01, 1), loc='upper left', borderaxespad=0, fontsize=max(6, fs - 2))
+                ax.tick_params(axis='both', labelsize=max(6, fs - 2))
+                return fig
+
+            fig1 = _make_hertz_fig(True, False, False)
+            _savefig(fig1, '_v1_nofc')
+            plt.close(fig1)
+
+            fig2 = _make_hertz_fig(True, True, False)
+            _savefig(fig2, '_v2_nofc_orig')
+            plt.close(fig2)
+
+            fig3 = _make_hertz_fig(True, True, True)
+            _savefig(fig3, '_system_corrected')
+            plt.close(fig3)
+
+            fig4 = _make_hertz_fig(False, True, True)
+            _savefig(fig4, '_v3_orig_sc')
+            plt.close(fig4)
+
+            fig5 = _make_hertz_fig(True, False, False, include_nofc_sc=True)
+            _savefig(fig5, '_v4_nofc_sc_nofc')
+            plt.close(fig5)
+
+        # ── Hertzian without system correction: single plot ──────────────────
+        else:
+            shifted_depths_corrected = np.maximum(depths_array - result.fit_d0, 0)
+            max_depth = float(np.max(shifted_depths_corrected)) if shifted_depths_corrected.size > 0 else 2.0
+            fit_depths = np.linspace(0, max_depth, 100)
+            fit_forces = result.fit_A * (fit_depths) ** 1.5
+
+            fig, ax = plt.subplots(figsize=(5, 4))
+            if has_nofc:
+                ax.scatter(shifted_full, f_full_arr, alpha=0.6, s=50, color='steelblue', label=nofc_lbl_data)
+                if fit_depths_0_max is not None:
+                    ax.plot(fit_depths_0_max, fit_forces_0_max, '--', color='steelblue', linewidth=2.5, label=nofc_lbl_fit)
+            if forces_avail and shifted_depths_corrected.size > 0 and forces_array.size == shifted_depths_corrected.size:
+                ax.scatter(shifted_depths_corrected, forces_array, alpha=0.7, s=50, label='Corrected Data (shifted)')
+            elif shifted_depths_corrected.size > 0:
+                ax.scatter(shifted_depths_corrected, np.zeros_like(shifted_depths_corrected), s=40, alpha=0.6,
+                           label='Depth points (shifted)')
+            ax.plot(fit_depths, fit_forces, 'r-', linewidth=2.5,
+                    label=f'Hertzian Fit: E = {result.elastic_modulus/1e6:.2f} MPa, A = {result.fit_A:.3f}, d0 = {result.fit_d0:.3f} mm, R² = {result.fit_quality:.3f}')
+            ax.set_xlabel('Indentation Depth (mm)', fontsize=fs)
+            ax.set_ylabel('Force (N)', fontsize=fs)
+            ax.set_title(f'Well {result.well.upper()} measurement', fontsize=fs + 2)
+            ax.legend(bbox_to_anchor=(1.01, 1), loc='upper left', borderaxespad=0, fontsize=max(6, fs - 2))
+            ax.tick_params(axis='both', labelsize=max(6, fs - 2))
+            _savefig(fig, "")
+            plt.close(fig)
+
+        _write_summary_txt()
 
     def plot_well_heatmap(self, summary_csv: str, value_col: str = 'ElasticModulus', cmap: str = 'viridis', annotate: bool = True, save_path: Optional[str] = None, convert_to_mpa: bool = True, title_suffix: Optional[str] = None):
         """Plot a 96-well plate heatmap from a summary CSV.
@@ -658,7 +698,7 @@ class ASMIPlotter:
             convert_to_mpa: Convert Pa to MPa for ElasticModulus (default: True)
             title_suffix: Optional suffix to add to the title (e.g., " (System Corrected)")
         """
-        fs = self.font_size
+        fs = 8  # Fixed smaller font size for heatmap to fit 96-well annotations
         ROWS = list(string.ascii_uppercase[:8])
         COLS = list(range(1, 13))
         well_to_idx = {(f"{row}{col}"): (i, j) for i, row in enumerate(ROWS) for j, col in enumerate(COLS)}

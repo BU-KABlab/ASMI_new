@@ -1234,7 +1234,8 @@ if __name__ == "__main__":
     #      )
     
     # Test all wells
-    wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
+    #wells_to_test = [f"{col}{row}" for col in ["A", "B", "C", "D", "E", "F", "G", "H"] for row in range(1, 13)]
+    wells_to_test = ['B1', 'B2','B3','B4', 'B5', 'B7', 'D1', 'D2', 'D4', 'D5', 'E2', 'E3', 'F1', 'F4', 'F5', 'G1', 'G2', 'G4', 'G5']
     
     # Test wells with CV>10% (B3, C7, D3, B10, G5, E4, B11, C9, G8, C12) + G11, G12, H7 (fit never succeeded)
     # wells_to_test = ['B3', 'C7', 'D3', 'B10', 'G5', 'E4', 'B11', 'C9', 'G8', 'C12', 'G11', 'G12', 'H7']
@@ -1247,7 +1248,7 @@ if __name__ == "__main__":
     
     # Hardware initialization: Set do_measure=True to initialize hardware, False to analyze existing data only
     # The main() function will automatically initialize hardware if do_measure=True and cnc/force_sensor are None
-    DO_MEASURE = False # Set to False to analyze existing data without hardware
+    DO_MEASURE = True # Set to False to analyze existing data without hardware
     
     cnc = None
     force_sensor = None
@@ -1349,19 +1350,21 @@ if __name__ == "__main__":
         measure_with_return=False, # measure with return (up/down)
         move_to_pickup=False, # if True, move to pickup position after measurements
          step_size=0.01, # step size of the measurement (mm)
-         z_target=-13.95,
-         force_limit=10.0,
-         well_top_z=-13.8, # start point of the measurement (avoid wasting time to move to the top of the material)
+         z_target=-73.0,
+         force_limit=3.0,
+         well_top_z=-71.0, # start point of the measurement (avoid wasting time to move to the top of the material)
         existing_run_folder=[
-            "run_777_20260303_132601"
-        ], 
+            "run_861_20260228_094437"
+        ],
         existing_measured_with_return=False,
         apply_system_correction=True,  # apply system correction (account for the system compliance)
-        max_depth=0.9, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
-        min_depth=0.00, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
-        poisson_ratio=0.5, # Poisson's ratio for the sample
+        max_depth=0.5, # Maximum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.5 mm)
+        min_depth=0.24, # Minimum depth (mm) to use for Hertzian fit. If None, uses default INDENTATION_DEPTH_THRESHOLD (0.25 mm)
+        poisson_ratio=0.49, # Poisson's ratio for the sample
         apply_force_correction=True, # Apply geometry correction (F/(c*d^b)) before Hertzian fit
         iterative_d0_refinement=True, # Iterative d0 refinement until |d0|<0.01 mm
-        well_bottom_z=-30, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
-        k_system_override=19.53, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
+        well_bottom_z=-84.0, # Well bottom Z (mm); sample height = |contact_z - well_bottom_z|；used to correct the force for the geometry of the sample
+        k_system_override=None, # e.g. 64.27 to use single value (N/mm) for all wells; None = use heatmap
+        remeasure_if_first_force_above=0.05, # if the absolute value of the first measurement force is greater than 0.05 N, re-measure the well with a well_top_z_remargin_offset of 0.3 mm
+        well_top_z_remargin_offset=0.3, # offset to raise the well_top_z when re-measuring (e.g., -72.8 -> -72.5)
          )

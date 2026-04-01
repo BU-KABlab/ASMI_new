@@ -117,6 +117,7 @@ class CNCController:
         self.ser.write(b"\r\n\r\n")
         self.ser.reset_input_buffer()
         self.send_gcode("$X")  # Unlock
+        self._ensure_grbl_status_includes_mpos()
         print("🔧 CNC Controller initialized")
         # self.sync_position()
     
@@ -381,63 +382,108 @@ class CNCController:
             print(f"⚠️ get_current_position timed out after {timeout_sec}s (CNC may be disconnected)")
             return None
 
+    def _poll_grbl_status_lines(self) -> list:
+        """Send ? and collect status lines. GRBL may send 'ok' or other lines before the <...|MPos:...> report."""
+        self.ser.reset_input_buffer()
+        self.ser.write(b'?\n')
+        time.sleep(0.05)
+        lines: list[str] = []
+        t0 = time.time()
+        while time.time() - t0 < 0.5:
+            while self.ser.in_waiting:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    lines.append(line)
+            time.sleep(0.005)
+        return lines
+
+    def _ensure_grbl_status_includes_mpos(self):
+        """If ? reports omit MPos, GRBL $10 status mask likely has machine position disabled (Grbl 1.1)."""
+        time.sleep(0.05)
+        lines = self._poll_grbl_status_lines()
+        if any("MPos:" in ln for ln in lines):
+            return
+        print("GRBL status report has no MPos; sending $10=255 for full status reports.")
+        self.ser.write(b"$10=255\n")
+        time.sleep(0.15)
+        while self.ser.in_waiting:
+            self.ser.readline()
+        lines2 = self._poll_grbl_status_lines()
+        if any("MPos:" in ln for ln in lines2):
+            print("✅ GRBL status reports now include MPos.")
+            return
+        print("⚠️ Still no MPos after $10=255; check firmware or run $$ on the controller.")
+
+    def _parse_mpos_line(self, response: str) -> Optional[list]:
+        """Parse a GRBL status line containing MPos: into [wx, wy, wz] work coordinates."""
+        try:
+            mpos_section = response.split("MPos:")[1].split("|")[0]
+            x, y, z = map(float, mpos_section.split(","))
+            wpos = None
+            if "WPos:" in response:
+                try:
+                    wpos_section = response.split("WPos:")[1].split("|")[0]
+                    wx, wy, wz = map(float, wpos_section.split(","))
+                    wpos = (wx, wy, wz)
+                except Exception:
+                    wpos = None
+            elif "WCO:" in response:
+                try:
+                    wco_section = response.split("WCO:")[1].split("|")[0]
+                    ox, oy, oz = map(float, wco_section.split(","))
+                    wpos = (x - ox, y - oy, z - oz)
+                except Exception:
+                    wpos = None
+            if wpos is None:
+                try:
+                    ox, oy, oz = self.work_offset
+                    wpos = (x - ox, y - oy, z - oz)
+                except Exception:
+                    wpos = (x, y, z)
+            return [wpos[0], wpos[1], wpos[2]]
+        except Exception as e:
+            print(f"⚠️ Failed to parse position: {e}")
+            return None
+
     def _get_current_position_impl(self, max_retries: int) -> Optional[list]:
         """Internal: blocking serial read for position. Run in thread with timeout."""
+        lines: list[str] = []
         for attempt in range(max_retries):
-            self.ser.reset_input_buffer()
-            self.ser.write(b'?\n')
-            time.sleep(0.02)
-            response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-            if not response and attempt < max_retries - 1:
+            lines = self._poll_grbl_status_lines()
+            if any("Reset to continue" in ln for ln in lines):
+                print("⚠️ GRBL needs reset. Attempting to reset...")
+                self.ser.write(b'$X\n')
+                time.sleep(1)
+                lines = self._poll_grbl_status_lines()
+                print(f"📡 After reset response: {' | '.join(lines[-3:])}")
+
+            response = None
+            for line in lines:
+                if "MPos:" in line:
+                    response = line
+                    break
+
+            if response:
+                parsed = self._parse_mpos_line(response)
+                if parsed is not None:
+                    return parsed
+
+            if attempt < max_retries - 1:
                 time.sleep(0.1)
-                continue
-            break
-        if not response:
-            return None
-        # Check for reset message
-        if "Reset to continue" in response:
-            print("⚠️ GRBL needs reset. Attempting to reset...")
-            self.ser.write(b'$X\n')  # Unlock
-            time.sleep(1)
-            self.ser.write(b'?\n')  # Try again
-            time.sleep(0.1)
-            response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-            print(f"📡 After reset response: {response}")
-        
-        if "MPos:" in response: # MPos is the machine position
-            try:
-                mpos_section = response.split("MPos:")[1].split("|")[0]
-                x, y, z = map(float, mpos_section.split(","))
-                # Compute/parse work position (WPos)
-                wpos = None
-                if "WPos:" in response: # WPos is the work position
-                    try:
-                        wpos_section = response.split("WPos:")[1].split("|")[0]
-                        wx, wy, wz = map(float, wpos_section.split(","))
-                        wpos = (wx, wy, wz)
-                    except Exception:
-                        wpos = None
-                elif "WCO:" in response: # WCO is the work coordinate offset
-                    try:
-                        wco_section = response.split("WCO:")[1].split("|")[0]
-                        ox, oy, oz = map(float, wco_section.split(","))
-                        wpos = (x - ox, y - oy, z - oz)
-                    except Exception:
-                        wpos = None
-                if wpos is None:
-                    try:
-                        ox, oy, oz = self.work_offset
-                        wpos = (x - ox, y - oy, z - oz)
-                    except Exception:
-                        wpos = (x, y, z)
-                return [wpos[0], wpos[1], wpos[2]]
-            
-            except Exception as e:
-                print(f"⚠️ Failed to parse position: {e}")
-                return None
-        else:
-            print("❌ No position data in GRBL response.")
-            return None
+
+        snippet = " | ".join(lines[-3:]) if lines else "(empty)"
+        print("❌ No position data in GRBL response.")
+        if lines and all("MPos:" not in ln for ln in lines):
+            if any(ln.strip().startswith("<") for ln in lines):
+                print(
+                    "   Hint: status line has no MPos. Enable machine position in GRBL reports: "
+                    "e.g. $10=3 (check current $10 with $$) or send $10=255 for full report."
+                )
+            else:
+                print(f"   Last serial data: {snippet[:240]}")
+        elif not lines:
+            print("   No lines read after ? — check baud, port, and that firmware is GRBL-compatible.")
+        return None
 
 
     def save_position(self):
