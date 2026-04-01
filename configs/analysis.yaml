@@ -1,0 +1,40 @@
+# ASMI analysis configuration.
+# Analysis parameters for indentation experiments.
+# Edit this file for each analysis run.
+
+system:
+  k_system: None # assumed spring constant of the system. If is None, it will be loaded from the spring_constant_data.csv file in the src folder.
+
+measurement:
+  well_bottom_z: -84.2 # used for geometry correction in analysis
+  measure_with_return: false # if true, existing data has return measurements
+
+wells:
+  wells_to_test: # if None, all wells will be measured
+    - A2
+  lock_xy_single_spot: false # if true, the gantry will only move to the specified lock_xy_position
+  lock_xy_position: null # if lock_xy_single_spot is true, the gantry will move to this position
+
+analysis:
+  contact_method: retrospective # "retrospective" or "extrapolation" or "simple_threshold" or "baseline_threshold"
+  fit_method: hertzian # "hertzian" or "linear", linear is for spring constant, hertzian is for elastic modulus
+  apply_system_correction: true # if true, apply system compliance correction (depth correction using k_system)
+  apply_force_correction: true # if true, apply geometry force correction (F/(c*d^b)) for well confinement
+  iterative_d0_refinement: true # if true, iterative d0 refinement until |d0|<0.01 mm (Hertzian only)
+  retrospective_threshold: 0.01 # if contact_method is "retrospective", force threshold (N) for contact detection
+  max_depth: 0.5 # maximum depth (mm) for fitting
+  min_depth: 0.24 # minimum depth (mm) for Hertzian fitting
+  poisson_ratio: 0.5 # Poisson's ratio of the material
+  use_legacy_height: false # if true, use legacy approx_height formula for (b,c) lookup
+  legacy_height_step_mm: 0.02 # step size (mm) for legacy height formula
+
+workflow:
+  generate_heatmap: true # if true, the heatmap will be generated
+  existing_run_folder: run_774_20260206_133925 # the folder name of the existing data
+  existing_measured_with_return: false # if true, the existing data has return measurements
+
+paths:
+  database: data/asmi_data.db
+  results_base: results/measurements
+  plots_base: results/plots
+  run_count_file: src/run_count.txt
