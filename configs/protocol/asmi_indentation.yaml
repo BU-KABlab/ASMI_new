@@ -3,10 +3,10 @@
 # Uses panda-core protocol engine (feature/uv-curing-instrument).
 #
 # Flow per well (handled by scan + indentation method):
-#   1. Move to well XY at safe_z (measurement_height=0, deck Z=-50)
-#   2. Descend to well_top_z, take baseline force readings
-#   3. Step toward z_target, reading force at each step
-#   4. Return to safe_z
+#   1. Move to well XY (deck Z + measurement_height offset)
+#   2. Descend to measurement_height, take baseline force readings
+#   3. Step toward z_limit, reading force at each step
+#   4. Stop on force_limit or z_limit
 #
 # Protocol-level flow:
 #   home → scan all wells → move safe_z → home
@@ -18,18 +18,17 @@ protocol:
   # Home the gantry and zero coordinates
   - home:
 
-  # Scan all wells: move to each well, run indentation, return to safe_z
+  # Scan all wells: move to each well, run indentation
   - scan:
       plate: plate
       instrument: asmi
       method: indentation
       method_kwargs:
-        z_target: -83.0
+        z_limit: -83.0
         step_size: 0.01
         force_limit: 10.0
-        well_top_z: -73.0
+        measurement_height: -73.0
         baseline_samples: 10
-        safe_z: -50.0
 
   # Return to safe Z after scan
   - move:
