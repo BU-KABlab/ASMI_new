@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ASMI runner — uses PANDA_CORE protocol engine for measurement and SQL persistence.
+ASMI runner — uses CubOS protocol engine for measurement and SQL persistence.
 
 Usage:
     python3 main_asmi.py              # real hardware, configs from configs/
