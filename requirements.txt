@@ -2,7 +2,7 @@
 # Core dependencies for CNC control, force sensing, data analysis, and visualization
 
 # CubOS — gantry, instruments, protocol engine, data persistence
-cubos @ git+https://github.com/Hydra-Laboratories/CubOS.git@staging
+cubos @ git+https://github.com/ursa-laboratories/CubOS.git@staging
 
 # Hardware communication
 pyserial>=3.5.0
