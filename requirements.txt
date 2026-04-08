@@ -1,8 +1,8 @@
 # ASMI - Automated Soft Matter Indenter
 # Core dependencies for CNC control, force sensing, data analysis, and visualization
 
-# PANDA_CORE — gantry, instruments, protocol engine, data persistence
-panda-core @ git+https://github.com/Hydra-Laboratories/PANDA_CORE.git@staging
+# CubOS — gantry, instruments, protocol engine, data persistence
+cubos @ git+https://github.com/ursa-laboratories/CubOS.git@staging
 
 # Hardware communication
 pyserial>=3.5.0

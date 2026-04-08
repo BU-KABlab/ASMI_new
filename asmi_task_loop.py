@@ -1,5 +1,5 @@
 """
-ASMI automation queue worker — uses the PANDA_CORE entry (main_asmi.run).
+ASMI automation queue worker — uses the CubOS entry (main_asmi.run).
 
 Polls the lab SQL DB for pending rows in ``asmi``, runs one well per task via
 ``main_asmi.run``, analyzes the new campaign with ``scripts.analyze_from_db``,
@@ -172,7 +172,7 @@ def run_asmi_task(conn, task):
 
 
 def poll_asmi_tasks():
-    print("Starting ASMI task polling loop (PANDA_CORE main_asmi.run)...")
+    print("Starting ASMI task polling loop (CubOS main_asmi.run)...")
     print("  Set ASMI_SKIP_FORCE_SENSOR=1 to use mock force sensor if needed.")
 
     while True:
