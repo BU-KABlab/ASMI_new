@@ -11,7 +11,7 @@ measurement:
 
 wells:
   wells_to_test: # if None, all wells will be measured
-    - A2
+    - B1
   lock_xy_single_spot: false # if true, the gantry will only move to the specified lock_xy_position
   lock_xy_position: null # if lock_xy_single_spot is true, the gantry will move to this position
 

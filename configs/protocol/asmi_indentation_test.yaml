@@ -1,0 +1,33 @@
+# ASMI indentation protocol.
+# Deck-origin +Z-up: z=0 at deck bottom, z=100 at home.
+# Indentation descends (decreasing Z) from measurement_height
+# toward indentation_limit.
+#
+# Protocol flow: home → scan all wells → park → home
+
+positions:
+  safe_z: [0.0, 0.0, 80.0]
+
+protocol:
+  - home:
+
+  - measure:
+      plate: plate
+      instrument: asmi
+      method: indentation
+      entry_travel_height: 80.0
+      interwell_travel_height: 53.0
+      measurement_height: 27.0
+      indentation_limit: 17.0
+      method_kwargs:
+        step_size: 0.01
+        force_limit: 10.0
+        baseline_samples: 10
+        measure_with_return: false
+
+  - move:
+      instrument: asmi
+      position: safe_z
+      travel_z: 80.0
+
+  - home:
