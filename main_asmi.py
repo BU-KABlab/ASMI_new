@@ -9,10 +9,10 @@ Usage:
     python3 main_asmi.py --skip-force-sensor  # real gantry, mock force sensor (for GoDirect issues)
 
 Configuration lives in YAML files under configs/:
-    gantry/asmi_gantry.yaml          — CNC serial port, working volume, GRBL
+    gantry/<gantry>.yaml             — serial port, working volume, GRBL,
+                                       and `instruments:` (mounted asmi)
     deck/asmi_deck.yaml              — well plate geometry and calibration
-    board/asmi_board.yaml            — ASMI instrument with indentation params
-    protocol/asmi_indentation.yaml   — scan protocol (method: indentation)
+    protocol/<protocol>.yaml         — protocol command sequence
     analysis.yaml                    — wells, analysis, workflow
 
 Troubleshooting:
@@ -41,7 +41,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 _CONFIGS = _PROJECT_ROOT / 'configs'
 _GANTRY_YAML = _CONFIGS / 'gantry' / 'new_asmi_gantry_calibration.yaml'
 _DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
-_BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
 _PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation_test.yaml'
 _EXPERIMENT_YAML = _CONFIGS / 'analysis.yaml'
 
@@ -71,10 +70,12 @@ def run(
         time.sleep(1.0)
         gantry.set_serial_timeout(0.05)
 
-    # Load protocol (mock instruments when --mock or --skip-force-sensor)
+    # Load protocol (mock instruments when --mock or --skip-force-sensor).
+    # Instruments live under the gantry YAML's `instruments:` block, so no
+    # separate board YAML is needed.
     protocol, context = setup_protocol(
-        str(_GANTRY_YAML), str(_DECK_YAML), str(_BOARD_YAML),
-        str(_PROTOCOL_YAML), gantry=gantry, mock_mode=mock or skip_force_sensor,
+        str(_GANTRY_YAML), str(_DECK_YAML), str(_PROTOCOL_YAML),
+        gantry=gantry, mock_mode=mock or skip_force_sensor,
     )
 
     # Filter wells if specified in experiment config
@@ -93,7 +94,7 @@ def run(
     context.campaign_id = store.create_campaign(
         description='ASMI indentation run',
         deck_config=str(_DECK_YAML),
-        board_config=str(_BOARD_YAML),
+        board_config=str(_GANTRY_YAML),
         gantry_config=str(_GANTRY_YAML),
         protocol_config=str(_PROTOCOL_YAML),
     )

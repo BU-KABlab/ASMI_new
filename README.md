@@ -38,7 +38,7 @@ python3 main_asmi.py --skip-force-sensor  # real gantry, mock force sensor
 
 1. Load `configs/analysis.yaml` for the run-level settings (database path, wells, etc.).
 2. Connect (or mock) the gantry; unlock GRBL.
-3. Build the protocol from `configs/gantry/`, `configs/deck/`, `configs/board/`, `configs/protocol/` via `protocol_engine.setup_protocol`.
+3. Build the protocol from `configs/gantry/`, `configs/deck/`, `configs/protocol/` via `protocol_engine.setup_protocol`. Instruments are read from the `instruments:` block inside the gantry YAML.
 4. Filter the plate to `wells.wells_to_test` from `analysis.yaml`.
 5. Create a campaign row in SQLite (`paths.database`).
 6. Connect the force sensor (real or mock), run the protocol, persist each well's measurement, disconnect.
@@ -52,13 +52,12 @@ python3 main_asmi.py --skip-force-sensor  # real gantry, mock force sensor
 
 | File | Purpose |
 |------|---------|
-| `gantry/asmi_gantry.yaml` | Serial port, working volume, GRBL settings, homing strategy |
+| `gantry/<gantry>.yaml` | Serial port, working volume, GRBL settings, homing strategy, **and mounted instruments** under the `instruments:` block |
 | `deck/asmi_deck.yaml` | Plate type and per-well calibration anchors (A1, A2 → row/col offsets) |
-| `board/asmi_board.yaml` | Instruments mounted on the gantry — offsets, approach/measurement heights, vendor-specific fields |
-| `protocol/asmi_indentation.yaml` | Sequence of CubOS commands (`home`, `scan`, `move`, …) |
+| `protocol/<protocol>.yaml` | Sequence of CubOS commands (`home`, `scan`, `measure`, `move`, …) |
 | `analysis.yaml` | Run-level settings: wells, contact/fit method, depth window, paths |
 
-All four `gantry`/`deck`/`board`/`protocol` files are validated by CubOS Pydantic schemas with `extra="forbid"` — unknown keys cause a load error.
+All three `gantry`/`deck`/`protocol` files are validated by CubOS Pydantic schemas with `extra="forbid"` — unknown keys cause a load error. (CubOS still supports a separate `board/<board>.yaml` for legacy setups, but new ASMI configs put instruments directly inside the gantry YAML.)
 
 ### Z-height convention (must match CubOS)
 
@@ -70,10 +69,10 @@ CubOS user-space coordinates are **positive Z = further above the deck**:
 - `measurement_height` is the **signed offset** at which the instrument engages: `0` = touch the reference, `<0` = dip below it. Must satisfy `safe_approach_height ≥ measurement_height`.
 - Indentation descends: Z decreases from `well_top_z` toward `z_limit`.
 
-For the current ASMI plate (`a1.z = 50`, `working_volume.z_max = 100`) a typical board entry looks like:
+A typical mounted-instrument entry inside the gantry YAML looks like:
 
 ```yaml
-# configs/board/asmi_board.yaml
+# configs/gantry/<gantry>.yaml — bottom of file
 instruments:
   asmi:
     type: asmi
@@ -81,8 +80,8 @@ instruments:
     offset_x: 0.0
     offset_y: 0.0
     depth: 0.0
-    measurement_height: 0.0    # touch the rim/well reference
-    safe_approach_height: 3.0  # 3 mm above rim during XY travel
+    measurement_height: 0.0    # default action Z (protocol can override per-call)
+    safe_approach_height: 3.0  # XY-travel clearance above the labware
     force_threshold: -50
     sensor_channels: [1]
 ```
@@ -124,7 +123,7 @@ protocol:
 
 - `working_volume.z_max` ≥ deck `a1.z` + `safe_approach_height` + any `entry_travel_height` your protocol uses.
 - `a1.z` is calibrated against the actual plate height with the indenter mounted (jog and read coords).
-- `measurement_height` and `safe_approach_height` on the asmi board entry produce a non-crashing approach (`a1.z + safe_approach_height` is above the rim, `a1.z + measurement_height` lands on/just into the sample).
+- `measurement_height` and `safe_approach_height` on the asmi `instruments:` entry produce a non-crashing approach (`a1.z + safe_approach_height` is above the rim, `a1.z + measurement_height` lands on/just into the sample).
 - `method_kwargs.z_limit` does not exceed the gantry's reachable Z (it must stay within `working_volume.z_min`, given user-space convention).
 
 The mock force sensor never raises a force-limit stop, so a misconfigured `z_limit` will drive the indenter into the plate. Always sanity-check Z values with `--mock` first, then with `--skip-force-sensor` at low feed rate before re-enabling the real sensor.
@@ -169,10 +168,9 @@ ASMI_new/
 ├── main_asmi_2.py              # Legacy batch-analysis entry point
 ├── configs/
 │   ├── analysis.yaml           # Run-level settings (wells, fit, paths)
-│   ├── gantry/asmi_gantry.yaml
+│   ├── gantry/<gantry>.yaml    # CNC config + mounted `instruments:` block
 │   ├── deck/asmi_deck.yaml
-│   ├── board/asmi_board.yaml
-│   └── protocol/asmi_indentation.yaml
+│   └── protocol/<protocol>.yaml
 ├── scripts/                    # DB inspection, GRBL helpers, backfill
 ├── src/
 │   ├── analysis.py             # Analysis pipeline (extrapolation, retrospective, …)
