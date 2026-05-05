@@ -22,9 +22,9 @@ protocol:
       instrument: asmi
       position: plate.E5            # arbitrary well; change if testing elsewhere
       method: indentation
-      measurement_height: 19.9      # absolute well-rim Z (matches deck cal a1.z)
+      measurement_height: 25.9      # absolute well-rim Z (matches deck cal a1.z)
       method_kwargs:
-        indentation_limit: 14.9     # ~5 mm dive headroom; force_limit usually fires first
+        indentation_limit: 20.9     # ~5 mm dive headroom; force_limit usually fires first
         step_size: 0.01
         force_limit: 10.0
         baseline_samples: 10

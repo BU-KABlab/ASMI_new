@@ -39,10 +39,10 @@ from data.data_store import DataStore
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
 _CONFIGS = _PROJECT_ROOT / 'configs'
-_GANTRY_YAML = _CONFIGS / 'gantry' / 'asmi_gantry.yaml'
+_GANTRY_YAML = _CONFIGS / 'gantry' / 'new_asmi_gantry_calibration.yaml'
 _DECK_YAML = _CONFIGS / 'deck' / 'asmi_deck.yaml'
 _BOARD_YAML = _CONFIGS / 'board' / 'asmi_board.yaml'
-_PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation.yaml'
+_PROTOCOL_YAML = _CONFIGS / 'protocol' / 'asmi_indentation_test.yaml'
 _EXPERIMENT_YAML = _CONFIGS / 'analysis.yaml'
 
 
