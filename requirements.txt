@@ -1,8 +1,10 @@
 # ASMI - Automated Soft Matter Indenter
 # Core dependencies for CNC control, force sensing, data analysis, and visualization
 
-# CubOS — gantry, instruments, protocol engine, data persistence
-cubos @ git+https://github.com/ursa-laboratories/CubOS.git@staging
+# CubOS — gantry, instruments, protocol engine, data persistence.
+# Temporarily pinned to the gantry-injection branch (PR #114) until merged
+# back to staging. Required for `measure` + `method: indentation`.
+cubos @ git+https://github.com/ursa-laboratories/CubOS.git@feature/measure-gantry-injection
 
 # Hardware communication
 pyserial>=3.5.0
