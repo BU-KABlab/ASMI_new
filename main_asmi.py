@@ -78,27 +78,32 @@ def run(
         gantry=gantry, mock_mode=mock or skip_force_sensor,
     )
 
-    # Filter wells if specified in experiment config
-    wells_to_test = cfg.get('wells', {}).get('wells_to_test')
-    if wells_to_test:
-        plate = context.deck['plate']
-        keep = {str(w).upper() for w in wells_to_test}
-        to_remove = [w for w in plate.wells if w not in keep]
-        for w in to_remove:
-            del plate.wells[w]
-        print(f"Measuring {len(plate.wells)} wells: {sorted(plate.wells.keys())}")
+    # NB: wells to be measured are owned by the protocol YAML (e.g. `measure
+    # position: plate.E5`, or `scan` which iterates the full plate).
+    # main_asmi.py used to filter plate.wells from analysis.yaml's
+    # `wells_to_test` here — that was a separation-of-concerns violation
+    # (analysis-time config dictating protocol behavior) and broke `measure`
+    # protocols whose hard-coded position got stripped out before the protocol
+    # ran. Removed; analysis.yaml is now strictly post-processing config.
 
-    # DataStore
-    store = DataStore(db_path=db_path)
-    context.data_store = store
-    context.campaign_id = store.create_campaign(
-        description='ASMI indentation run',
-        deck_config=str(_DECK_YAML),
-        board_config=str(_GANTRY_YAML),
-        gantry_config=str(_GANTRY_YAML),
-        protocol_config=str(_PROTOCOL_YAML),
-    )
-    print(f"Campaign {context.campaign_id} created in {db_path}")
+    # DataStore — only persist real measurements. Mocked runs (--mock or
+    # --skip-force-sensor) produce synthetic zero-force data that would
+    # otherwise pollute the analysis DB.
+    store: DataStore | None = None
+    if not (mock or skip_force_sensor):
+        store = DataStore(db_path=db_path)
+        context.data_store = store
+        context.campaign_id = store.create_campaign(
+            description='ASMI indentation run',
+            deck_config=str(_DECK_YAML),
+            board_config=str(_GANTRY_YAML),
+            gantry_config=str(_GANTRY_YAML),
+            protocol_config=str(_PROTOCOL_YAML),
+        )
+        print(f"Campaign {context.campaign_id} created in {db_path}")
+    else:
+        reason = "--mock" if mock else "--skip-force-sensor"
+        print(f"DataStore disabled ({reason}); no campaign row will be written.")
 
     # Connect instruments and run
     if skip_force_sensor:
@@ -108,20 +113,33 @@ def run(
     print("Starting measurement.")
     try:
         results = protocol.run(context)
-        scan_results = results[0] if results else {}
-        print(f"\n{len(scan_results)} wells measured")
-        for well_id, result in scan_results.items():
-            pts = result.get('data_points', 0)
-            exceeded = result.get('force_exceeded', False)
-            print(f"  {well_id}: {pts} points, force_exceeded={exceeded}")
+        print(f"\nProtocol complete: {len(results)} step(s) executed.")
+        for i, result in enumerate(results):
+            if not isinstance(result, dict):
+                continue
+            # `measure` returns the bare indentation result; `scan` returns
+            # {well_id: result}. Detect which by looking for the canonical
+            # measurement keys.
+            if 'data_points' in result:
+                pts = result.get('data_points', 0)
+                exceeded = result.get('force_exceeded', False)
+                print(f"  step {i} (measure): {pts} points, force_exceeded={exceeded}")
+            else:
+                for well_id, well_result in result.items():
+                    if not isinstance(well_result, dict):
+                        continue
+                    pts = well_result.get('data_points', 0)
+                    exceeded = well_result.get('force_exceeded', False)
+                    print(f"  step {i} {well_id}: {pts} points, force_exceeded={exceeded}")
     except KeyboardInterrupt:
         print("\nAborted by user.")
     finally:
         context.board.disconnect_instruments()
         if not mock:
             gantry.disconnect()
-        store.close()
-        print(f"Data persisted to {db_path}")
+        if store is not None:
+            store.close()
+            print(f"Data persisted to {db_path}")
 
 
 if __name__ == "__main__":

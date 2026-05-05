@@ -9,11 +9,17 @@ measurement:
   well_bottom_z: -84.2 # used for geometry correction in analysis
   measure_with_return: false # if true, existing data has return measurements
 
+# NOTE: which wells get measured is owned by the protocol YAML, not this
+# file. `measure` steps name a specific `position: plate.<well>`; `scan`
+# steps iterate the full plate. analysis.yaml is strictly post-processing
+# config (fit method, depth window, etc.).
+#
+# The `lock_xy_single_spot` / `lock_xy_position` knobs below are still
+# read by some legacy code paths but are not honored by the cubos runner;
+# treat them as TODO until either wired up or removed.
 wells:
-  wells_to_test: # if None, all wells will be measured
-    - B1
-  lock_xy_single_spot: false # if true, the gantry will only move to the specified lock_xy_position
-  lock_xy_position: null # if lock_xy_single_spot is true, the gantry will move to this position
+  lock_xy_single_spot: false
+  lock_xy_position: null
 
 analysis:
   contact_method: retrospective # "retrospective" or "extrapolation" or "simple_threshold" or "baseline_threshold"
