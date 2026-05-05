@@ -1,19 +1,23 @@
 # ASMI single-well indentation test.
-# Deck-origin +Z-up: z=0 at deck bottom, z=92 at home.
-# Indentation descends (Z decreases) from measurement_height toward
-# indentation_limit, stopping at force_limit or indentation_limit.
+#
+# CubOS deck-origin +Z-up. Heights on `measure`/`scan` are
+# *labware-relative* offsets above the plate surface (`labware.height_mm`):
+#   action_z = labware.height_mm + measurement_height
+# Inter-labware travel uses the gantry's `safe_z` (absolute).
 #
 # Uses cubos `measure` (single-position dispatch) rather than `scan` so
 # we don't iterate the plate. Pick the well via `position: plate.<well>`.
 #
-# Requires cubos branch with `measure` accepting `measurement_height` and
-# injecting gantry into closed-loop methods (PR #114 / branch
-# feature/measure-gantry-injection).
+# Field sourcing: `measurement_height` is set on the gantry yaml's asmi
+# instrument config (= 0.0, well-rim). It could also be set here; if both
+# are set they must match (the validator rejects conflicts).
+# `indentation_limit` is a sign-agnostic *magnitude* — the descent
+# distance below the action plane.
 #
 # Protocol flow: home → measure one well → park → home
 
 positions:
-  safe_z: [0.0, 0.0, 80.0]
+  park_position: [0.0, 0.0, 80.0]
 
 protocol:
   - home:
@@ -22,9 +26,9 @@ protocol:
       instrument: asmi
       position: plate.E5            # arbitrary well; change if testing elsewhere
       method: indentation
-      measurement_height: 25.9      # absolute well-rim Z (matches deck cal a1.z)
       method_kwargs:
-        indentation_limit: 20.9     # ~5 mm dive headroom; force_limit usually fires first
+        # 5 mm of descent below the well rim; force_limit usually fires first.
+        indentation_limit: 5.0
         step_size: 0.01
         force_limit: 10.0
         baseline_samples: 10
@@ -32,7 +36,7 @@ protocol:
 
   - move:
       instrument: asmi
-      position: safe_z
+      position: park_position
       travel_z: 80.0
 
   - home:

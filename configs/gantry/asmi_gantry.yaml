@@ -1,6 +1,6 @@
 # ASMI gantry configuration.
 # Genmitsu 3018 PRO with ASMI indenter mounted.
-# Positive-down Z: 0 at home (top of travel), grows toward the deck.
+# CubOS deck-origin +Z-up: z=0 at deck bottom, z grows toward home.
 
 serial_port: /dev/ttyUSB0
 
@@ -8,6 +8,9 @@ cnc:
   homing_strategy: standard
   total_z_height: 100.0
   y_axis_motion: head
+  # Absolute deck-frame Z used for inter-labware travel and the entry
+  # approach to the first well of a scan.
+  safe_z: 80.0
 
 working_volume:
   x_min: 0.0
@@ -33,8 +36,9 @@ instruments:
     offset_x: 0.0
     offset_y: 0.0
     depth: 0.0
-    measurement_height: 0.0
-    safe_approach_height: 3.0
+    # Labware-relative offsets (mm above labware.height_mm; negative = below).
+    measurement_height: 0.0    # at the well rim
+    safe_approach_height: 3.0  # 3 mm above the well rim (between-wells travel)
     force_threshold: -50
     sensor_channels:
       - 1

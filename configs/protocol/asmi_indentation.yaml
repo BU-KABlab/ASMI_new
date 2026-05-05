@@ -1,12 +1,19 @@
-# ASMI indentation protocol.
-# Deck-origin +Z-up: z=0 at deck bottom, z=100 at home.
-# Indentation descends (decreasing Z) from measurement_height
-# toward indentation_limit.
+# ASMI indentation protocol — full-plate scan.
+#
+# CubOS deck-origin +Z-up. Heights on `scan` are *labware-relative* offsets
+# above the plate surface (`labware.height_mm`); inter-labware travel and
+# the entry approach to the first well use the gantry's `safe_z`.
+#
+# Field sourcing: `measurement_height` and `safe_approach_height` are set
+# on the gantry yaml's asmi instrument config and inherited here. Either
+# field could also be set here; if both are set they must match.
+# `indentation_limit` is a sign-agnostic *magnitude* — the descent
+# distance below the action plane.
 #
 # Protocol flow: home → scan all wells → park → home
 
 positions:
-  safe_z: [0.0, 0.0, 80.0]
+  park_position: [0.0, 0.0, 80.0]
 
 protocol:
   - home:
@@ -15,11 +22,10 @@ protocol:
       plate: plate
       instrument: asmi
       method: indentation
-      entry_travel_height: 80.0
-      interwell_travel_height: 53.0
-      measurement_height: 27.0
-      indentation_limit: 17.0
       method_kwargs:
+        # 10 mm magnitude of descent below the well rim; force_limit
+        # usually fires first on a real sample.
+        indentation_limit: 10.0
         step_size: 0.01
         force_limit: 10.0
         baseline_samples: 10
@@ -27,7 +33,7 @@ protocol:
 
   - move:
       instrument: asmi
-      position: safe_z
+      position: park_position
       travel_z: 80.0
 
   - home:
