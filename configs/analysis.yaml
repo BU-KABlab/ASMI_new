@@ -5,9 +5,15 @@
 system:
   k_system: None # assumed spring constant of the system. If is None, it will be loaded from the spring_constant_data.csv file in the src folder.
 
-measurement:
-  well_bottom_z: -84.2 # used for geometry correction in analysis
-  measure_with_return: false # if true, existing data has return measurements
+# NOTE: `well_bottom_z` (sample-floor Z used by Hertzian geometry correction)
+# is no longer carried here. It's derived from the plate definition by
+# scripts/analyze_from_db.py: `plate.a1.z - plate.well_depth_mm`. For this to
+# work the deck YAML's plate must declare `well_depth_mm` (the
+# `sbs_96_wellplate` registry definition supplies a default of 10.67 mm for
+# standard flat-bottom shallow plates).
+#
+# The dead `measurement.measure_with_return` flag was also removed — the
+# protocol YAML's `method_kwargs.measure_with_return` is the source of truth.
 
 # NOTE: which wells get measured is owned by the protocol YAML, not this
 # file. `measure` steps name a specific `position: plate.<well>`; `scan`

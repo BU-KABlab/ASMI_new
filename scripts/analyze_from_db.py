@@ -26,8 +26,14 @@ import yaml
 from src.analysis import IndentationAnalyzer
 from src.plot import ASMIPlotter
 
+# Cubos deck loader — used to derive `well_bottom_z` from the plate's
+# `well_depth_mm` instead of carrying it as a manual analysis.yaml knob.
+from deck.labware.well_plate import WellPlate
+from deck.loader import load_deck_from_yaml
+
 DB_PATH = ROOT / "data" / "asmi_data.db"
 EXPERIMENT_YAML = ROOT / "configs" / "analysis.yaml"
+DECK_YAML = ROOT / "configs" / "deck" / "asmi_deck.yaml"
 
 
 def unpack_blob(blob: bytes) -> tuple[float, ...]:
@@ -36,6 +42,21 @@ def unpack_blob(blob: bytes) -> tuple[float, ...]:
         return ()
     n = len(blob) // 8
     return struct.unpack(f"<{n}d", blob)
+
+
+def resolve_well_bottom_z(deck_path: Path) -> float | None:
+    """Return the inside well-floor Z (deck-frame) for the first well plate.
+
+    Computed as `a1.z - well_depth_mm`. Returns None if the deck has no
+    well plate, or the plate doesn't declare `well_depth_mm` — caller
+    falls back to the IndentationAnalyzer default in that case.
+    """
+    deck = load_deck_from_yaml(deck_path)
+    for key in deck:
+        labware = deck[key]
+        if isinstance(labware, WellPlate) and labware.well_depth_mm is not None:
+            return labware.get_well_center("A1").z - labware.well_depth_mm
+    return None
 
 
 def build_analyzer_data(
@@ -61,12 +82,22 @@ def analyze_campaign(
     db_path: str | Path,
     generate_plot: bool = True,
     well_filter: str | None = None,
+    deck_path: Path = DECK_YAML,
 ) -> list:
     """Analyze a campaign's measurements. Returns list of AnalysisResult."""
     import sqlite3
 
     analysis_cfg = cfg.get("analysis", {})
-    measurement_cfg = cfg.get("measurement", {})
+
+    # Compute well-floor Z from the plate definition (`a1.z - well_depth_mm`).
+    # Falls back to None when the deck plate doesn't declare `well_depth_mm`,
+    # in which case IndentationAnalyzer's parameter default is used.
+    well_bottom_z = resolve_well_bottom_z(deck_path)
+    if well_bottom_z is None:
+        print(
+            "Warning: deck plate doesn't declare `well_depth_mm`; "
+            "falling back to IndentationAnalyzer default for well_bottom_z."
+        )
 
     conn = sqlite3.connect(db_path)
     exp_q = "SELECT e.id, e.well_id FROM experiments e WHERE e.campaign_id = ?"
@@ -123,7 +154,7 @@ def analyze_campaign(
             retrospective_threshold=analysis_cfg.get("retrospective_threshold"),
             max_depth=analysis_cfg.get("max_depth", 0.5),
             min_depth=analysis_cfg.get("min_depth", 0.24),
-            well_bottom_z=measurement_cfg.get("well_bottom_z", -84.2),
+            **({"well_bottom_z": well_bottom_z} if well_bottom_z is not None else {}),
             use_legacy_height=analysis_cfg.get("use_legacy_height", False),
             legacy_height_step_mm=analysis_cfg.get("legacy_height_step_mm", 0.02),
         )
