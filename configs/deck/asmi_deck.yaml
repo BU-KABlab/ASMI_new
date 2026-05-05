@@ -21,5 +21,5 @@ labware:
   plate:
     load_name: sbs_96_wellplate
     calibration:
-      a1: { x: 348.5, y: 49.0, z: 19.9 }   # TODO: re-measure in deck frame
-      a2: { x: 339.5, y: 49.0, z: 19.9 }   # TODO: re-measure in deck frame
+      a1: { x: 348.5, y: 47.5, z: 19.9 }   # TODO: re-measure in deck frame
+      a2: { x: 339.5, y: 47.5, z: 19.9 }   # TODO: re-measure in deck frame
