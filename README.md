@@ -1,6 +1,6 @@
-# ASMI - Automated Soft Matter Indenter
+# ASMI — Automated Soft Matter Indenter
 
-Automated system for high-throughput mechanical characterization of soft materials using CNC positioning and force sensors. Designed for hydrogel characterization, tissue engineering, and 96-well plate screening.
+Automated mechanical characterization of soft materials. ASMI drives a CNC gantry with a GoDirect force sensor through the [CubOS](https://github.com/ursa-laboratories/CubOS) protocol engine, scans wells in a 96-well plate, and persists every measurement to SQLite.
 
 ## Installation
 
@@ -8,277 +8,142 @@ Automated system for high-throughput mechanical characterization of soft materia
 pip install -r requirements.txt
 ```
 
-**Hardware Requirements:**
-- CNC machine with USB connection
+Hardware:
+- CNC gantry over USB (GRBL, e.g. Genmitsu 3018 PRO)
 - GoDirect force sensor (Vernier)
 
-## Quick Start
+## Running `main_asmi.py`
 
-Edit the `main()` function call at the bottom of `main_asmi.py` to configure your measurement parameters.
+`main_asmi.py` is config-driven — there are no Python arguments to edit. Set up the YAML in `configs/` (see below) and run:
 
-**Important:** Before calling `main()`, you must create or comment out the hardware objects:
-
-### For Measurements (Hardware Required)
-
-```python
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
-
-# Create hardware objects
-cnc = CNCController()
-force_sensor = ForceSensor()
-
-main(
-    cnc=cnc,
-    force_sensor=force_sensor,
-    do_measure=True,
-    wells_to_test=["A1", "A2", "B1"],
-    contact_method="retrospective",
-    fit_method="hertzian",
-    apply_system_correction=True,
-)
+```bash
+python3 main_asmi.py                 # real hardware, configs from configs/
+python3 main_asmi.py --mock          # offline dry run; mock gantry + mock force sensor
+python3 main_asmi.py --no-home       # skip homing (already homed via UGS)
+python3 main_asmi.py --skip-force-sensor  # real gantry, mock force sensor
 ```
 
-### For Analysis Only (No Hardware Connection)
+### Flag semantics
 
-```python
-# Comment out hardware objects to avoid connection issues
-# from src.CNCController import CNCController
-# from src.ForceSensor import ForceSensor
-# cnc = CNCController()
-# force_sensor = ForceSensor()
+| Flag                  | Gantry      | Force sensor | When to use |
+|-----------------------|-------------|--------------|-------------|
+| _(none)_              | real        | real         | Real measurement run |
+| `--mock`              | mock        | mock         | YAML/protocol dry run, CI |
+| `--skip-force-sensor` | real        | mock         | GoDirect firmware mismatch (`struct.error`); validating motion against real plate without acquiring force data |
+| `--no-home`           | (real only) | unchanged    | Already homed in UGS — skip the homing cycle to avoid re-zeroing |
 
-main(
-    cnc=None,  # Must be None for analysis-only
-    force_sensor=None,  # Must be None for analysis-only
-    do_measure=False,
-    existing_run_folder="run_732_20251030_122001",
-    wells_to_test=["E5", "E6", "E7"],
-    contact_method="retrospective",
-    fit_method="hertzian",
-    apply_system_correction=True,
-)
+`--mock` and `--skip-force-sensor` both run instruments offline (`mock_mode=True` is passed to CubOS). `--mock` additionally swaps the gantry for an offline `Gantry(offline=True)`. `--no-home` only suppresses the initial homing call; the protocol's own `home:` steps still execute when not in `--mock`.
+
+### Run flow
+
+1. Load `configs/analysis.yaml` for the run-level settings (database path, wells, etc.).
+2. Connect (or mock) the gantry; unlock GRBL.
+3. Build the protocol from `configs/gantry/`, `configs/deck/`, `configs/board/`, `configs/protocol/` via `protocol_engine.setup_protocol`.
+4. Filter the plate to `wells.wells_to_test` from `analysis.yaml`.
+5. Create a campaign row in SQLite (`paths.database`).
+6. Connect the force sensor (real or mock), run the protocol, persist each well's measurement, disconnect.
+
+### Troubleshooting
+
+- **GRBL alarm on connect.** The runner sends `$X` (unlock) and `$H` (home). If the alarm persists, home manually in UGS and run with `--no-home`.
+- **`struct.error: unpack requires a buffer of 18 bytes`.** GoDirect firmware/protocol mismatch. Run with `--skip-force-sensor` to keep the real gantry but mock force data, or `pip install -U godirect`, switch USB ports, and verify the sensor model.
+
+## Configuration (`configs/`)
+
+| File | Purpose |
+|------|---------|
+| `gantry/asmi_gantry.yaml` | Serial port, working volume, GRBL settings, homing strategy |
+| `deck/asmi_deck.yaml` | Plate type and per-well calibration anchors (A1, A2 → row/col offsets) |
+| `board/asmi_board.yaml` | Instruments mounted on the gantry — offsets, approach/measurement heights, vendor-specific fields |
+| `protocol/asmi_indentation.yaml` | Sequence of CubOS commands (`home`, `scan`, `move`, …) |
+| `analysis.yaml` | Run-level settings: wells, contact/fit method, depth window, paths |
+
+All four `gantry`/`deck`/`board`/`protocol` files are validated by CubOS Pydantic schemas with `extra="forbid"` — unknown keys cause a load error.
+
+### Z-height convention (must match CubOS)
+
+CubOS user-space coordinates are **positive Z = further above the deck**:
+
+- `working_volume.z_max` is the home (top of travel).
+- A labware's `z` is its reference height (well rim or sample surface) measured in the same user-space.
+- `safe_approach_height` is a **positive offset above** the labware reference, used for XY travel between wells.
+- `measurement_height` is the **signed offset** at which the instrument engages: `0` = touch the reference, `<0` = dip below it. Must satisfy `safe_approach_height ≥ measurement_height`.
+- Indentation descends: Z decreases from `well_top_z` toward `z_limit`.
+
+For the current ASMI plate (`a1.z = 50`, `working_volume.z_max = 100`) a typical board entry looks like:
+
+```yaml
+# configs/board/asmi_board.yaml
+instruments:
+  asmi:
+    type: asmi
+    vendor: vernier            # required by CubOS schema
+    offset_x: 0.0
+    offset_y: 0.0
+    depth: 0.0
+    measurement_height: 0.0    # touch the rim/well reference
+    safe_approach_height: 3.0  # 3 mm above rim during XY travel
+    force_threshold: -50
+    sensor_channels: [1]
 ```
 
-## Main Function Parameters
+### Indentation method kwargs
 
-### Essential Parameters
+`scan` accepts only `plate`, `instrument`, `method`, `delay_s`, `method_kwargs`. Indentation parameters belong inside `method_kwargs`:
 
-| Parameter | Type | Default | Description |
-|----------|------|---------|-------------|
-| `do_measure` | bool | `True` | `True` to measure, `False` to analyze existing data |
-| `wells_to_test` | list[str] | `None` | List of wells (e.g., `["A1", "A2"]`) or `[None]` for current position |
-| `contact_method` | str | `"retrospective"` | `"extrapolation"`, `"retrospective"`, `"simple_threshold"`, or `"baseline_threshold"` |
-| `fit_method` | str | `"hertzian"` | `"hertzian"` for elastic modulus, `"linear"` for spring constant |
-| `apply_system_correction` | bool | `True` | Apply system compliance correction for Hertzian fits |
+```yaml
+# configs/protocol/asmi_indentation.yaml
+positions:
+  safe_z: [0.0, 0.0, 80.0]
 
-### Measurement Parameters
-
-| Parameter | Type | Default | Description |
-|----------|------|---------|-------------|
-| `z_target` | float | `-15.0` | Target indentation depth (mm). **Measurement stops when either `z_target` or `force_limit` is reached** |
-| `step_size` | float | `0.02` | Movement step size (mm) |
-| `force_limit` | float | `5.0` | Maximum force limit (N). **Measurement stops when either `force_limit` or `z_target` is reached** |
-| `well_top_z` | float | `-9.0` | Well top position before indentation (mm), or `None` to use current Z |
-| `measure_with_return` | bool | `False` | Enable return measurements (up/down) |
-| `retrospective_threshold` | float | `None` | Force threshold for retrospective contact detection (N) |
-
-**Note:** Measurements automatically stop when either the `force_limit` (N) or `z_target` (mm) is reached, whichever comes first.
-
-### Analysis Parameters
-
-| Parameter | Type | Default | Description |
-|----------|------|---------|-------------|
-| `existing_run_folder` | str | `None` | Folder name for existing data (e.g., `"run_732_20251030_122001"`) |
-| `existing_measured_with_return` | bool | `True` | Whether existing data has return measurements |
-| `generate_heatmap` | bool | `True` | Generate 96-well plate heatmaps after analysis |
-| `max_depth` | float | `0.5` | Maximum indentation depth (mm) used for fitting |
-| `min_depth` | float | `0.25` | **Hertzian only:** Minimum depth (mm); 0.25 = legacy 0.25–0.5 mm range. Linear always uses 0–max_depth |
-| `apply_force_correction` | bool | `False` | **Hertzian only:** Apply geometry-based force correction (KABlab legacy) before fit |
-| `iterative_d0_refinement` | bool | `False` | **Hertzian only:** Iterative d0 refinement until \|d0\| < 0.01 mm (KABlab legacy) |
-| `well_bottom_z` | float | `-85.0` | Well bottom Z (mm); sample height = \|contact_z - well_bottom_z\| |
-| `poisson_ratio` | float | `None` | Sample Poisson's ratio; `None` = auto-detect from filename (e.g., 0.5 for hydrogel, 0.3 for glassy) |
-| `use_legacy_height` | bool | `False` | Use original batch script approx_height for (b,c) lookup (match original E) |
-| `legacy_height_step_mm` | float | `0.02` | Step size (mm) for legacy height formula; match `step_size` when measuring |
-| `marker_scale` | float | `1.0` | Scale factor for plot marker sizes; use >1 when resizing in PowerPoint |
-
-### Advanced Parameters
-
-| Parameter | Type | Default | Description |
-|----------|------|---------|-------------|
-| `home_before_measure` | bool | `True` | Home CNC before measurements |
-| `move_to_pickup` | bool | `False` | Move to pickup position after measurements |
-| `pickup_position` | tuple | `(0.0, 0.0, 0.0)` | XYZ coordinates for pickup position (mm) |
-| `lock_xy_single_spot` | bool | `False` | Lock XY position for single spot measurements |
-| `lock_xy_position` | tuple | `None` | Specific XY coordinates to lock (mm) |
-| `cnc` | CNCController | `None` | **For measurements:** Create `CNCController()` object. **For analysis-only:** Must be `None` to avoid connection errors |
-| `force_sensor` | ForceSensor | `None` | **For measurements:** Create `ForceSensor()` object. **For analysis-only:** Must be `None` to avoid connection errors |
-
-## Usage Examples
-
-### Example 1: Measure Specific Wells
-
-```python
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
-
-cnc = CNCController()
-force_sensor = ForceSensor()
-
-main(
-    cnc=cnc,
-    force_sensor=force_sensor,
-    do_measure=True,
-    wells_to_test=["E5", "E6", "E7"],
-    contact_method="retrospective",
-    retrospective_threshold=0.05,
-    fit_method="hertzian",
-    apply_system_correction=True,
-    z_target=-80.0,
-    step_size=0.01,
-    force_limit=10.0,
-    well_top_z=-70.0,
-)
+protocol:
+  - home:
+  - scan:
+      plate: plate
+      instrument: asmi
+      method: indentation
+      method_kwargs:
+        z_limit: 17.0          # absolute user-space Z to stop at (mm)
+        step_size: 0.01        # mm per step
+        force_limit: 10.0      # N — stop when |corrected force| exceeds
+        baseline_samples: 10
+        measure_with_return: false
+        # measurement_height: 50.0  # optional override of well_top_z
+  - move:
+      instrument: asmi
+      position: safe_z
+      travel_z: 80.0
+  - home:
 ```
 
-### Example 2: Analyze Existing Data with System Correction
+`measurement_height` inside `method_kwargs` is interpreted by `ASMI.indentation` as the **absolute** Z to descend to before starting the indent (the "well top"); when omitted it falls back to the instrument's configured `measurement_height` after `approach_and_descend`.
 
-```python
-# Comment out hardware objects for analysis-only
-# from src.CNCController import CNCController
-# from src.ForceSensor import ForceSensor
-# cnc = CNCController()
-# force_sensor = ForceSensor()
+## Heights when running `--skip-force-sensor`
 
-main(
-    cnc=None,  # Must be None to avoid connection attempts
-    force_sensor=None,  # Must be None to avoid connection attempts
-    do_measure=False,
-    existing_run_folder="run_732_20251030_122001",
-    wells_to_test=["E5", "E6", "E7"],
-    contact_method="retrospective",
-    fit_method="hertzian",
-    apply_system_correction=True,
-    generate_heatmap=True,
-)
+`--skip-force-sensor` instantiates the ASMI driver with `offline=True`, so `measure()` returns synthetic zero-force readings, but the **gantry is real** and uses the configured Z values literally. Verify before running on the bench:
+
+- `working_volume.z_max` ≥ deck `a1.z` + `safe_approach_height` + any `entry_travel_height` your protocol uses.
+- `a1.z` is calibrated against the actual plate height with the indenter mounted (jog and read coords).
+- `measurement_height` and `safe_approach_height` on the asmi board entry produce a non-crashing approach (`a1.z + safe_approach_height` is above the rim, `a1.z + measurement_height` lands on/just into the sample).
+- `method_kwargs.z_limit` does not exceed the gantry's reachable Z (it must stay within `working_volume.z_min`, given user-space convention).
+
+The mock force sensor never raises a force-limit stop, so a misconfigured `z_limit` will drive the indenter into the plate. Always sanity-check Z values with `--mock` first, then with `--skip-force-sensor` at low feed rate before re-enabling the real sensor.
+
+## Output
+
+Per run, CubOS persists a campaign + experiment + measurement rows to the SQLite database at `paths.database` (default `data/asmi_data.db`). Inspect with the helpers under `scripts/`:
+
+```bash
+python3 scripts/view_asmi_db.py            # browse campaigns / experiments
+python3 scripts/analyze_from_db.py         # pull measurements into the analysis pipeline
+python3 scripts/check_grbl_settings.py     # dump live GRBL $-settings
 ```
 
-### Example 3: Measure with Return (Up/Down)
+Plots and CSVs from analysis land in `results/plots/<run_folder>/` and `results/measurements/<run_folder>/`.
 
-```python
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
+## Batch analysis (legacy KABlab pipeline)
 
-cnc = CNCController()
-force_sensor = ForceSensor()
-
-main(
-    cnc=cnc,
-    force_sensor=force_sensor,
-    do_measure=True,
-    wells_to_test=["A1", "A2"],
-    measure_with_return=True,
-    contact_method="retrospective",
-    fit_method="hertzian",
-    apply_system_correction=True,
-)
-```
-
-### Example 4: Hertzian with KABlab Legacy Options (PDMS, etc.)
-
-```python
-main(
-    do_measure=False,
-    existing_run_folder="run_737_20260209_204208",
-    wells_to_test=["E5", "E6", "E7"],
-    contact_method="retrospective",
-    fit_method="hertzian",
-    apply_system_correction=False,
-    min_depth=0.25,
-    max_depth=0.5,
-    apply_force_correction=True,
-    iterative_d0_refinement=True,
-    well_bottom_z=-85.0,
-    poisson_ratio=0.5,
-)
-```
-
-### Example 5: Measure System Compliance (Linear Fit)
-
-```python
-from src.CNCController import CNCController
-from src.ForceSensor import ForceSensor
-
-cnc = CNCController()
-force_sensor = ForceSensor()
-
-main(
-    cnc=cnc,
-    force_sensor=force_sensor,
-    do_measure=True,
-    wells_to_test=[None],  # Current position
-    contact_method="retrospective",
-    retrospective_threshold=13.0,  # High threshold for system compliance
-    fit_method="linear",  # Linear fit for spring constant
-    z_target=-90.0,
-    force_limit=20.0,
-    well_top_z=-80.0,
-    lock_xy_single_spot=True,
-    lock_xy_position=(-120, -40.0),
-)
-```
-
-### Example 6: Plot Customization for PowerPoint
-
-```python
-main(
-    do_measure=False,
-    existing_run_folder="run_737_...",
-    marker_scale=1.5,  # Larger markers/lines for resizing in PPT
-)
-```
-
-## Output Files
-
-Results are saved in `results/`:
-
-```
-results/
-├── measurements/
-│   └── run_XXX_YYYYMMDD_HHMMSS/
-│       └── well_*.csv              # Raw measurement data
-└── plots/
-    └── run_XXX_YYYYMMDD_HHMMSS/
-        ├── *_analysis*.png         # Analysis plots with fits
-        ├── *_contact_detection*.png # Contact point detection
-        ├── well_heatmap_original.png # Original E values
-        ├── well_heatmap_corrected.png # System-corrected E values
-        └── summary.csv              # Summary data for heatmaps
-```
-
-## Contact Detection Methods
-
-- **`"retrospective"`**: Analyzes force data retrospectively from a threshold (recommended)
-- **`"extrapolation"`**: Linear extrapolation from force threshold
-- **`"simple_threshold"`**: Simple force threshold detection
-- **`"baseline_threshold"`**: Original KABlab formula: threshold = -baseline + 2×std
-
-## Fitting Methods
-
-- **`"hertzian"`**: Calculates elastic modulus using Hertzian contact mechanics
-  - With `apply_system_correction=True`: Generates both original and corrected fits/heatmaps
-  - `min_depth`, `max_depth`: Control depth range for fit (default 0.25–0.5 mm)
-  - `apply_force_correction`: Geometry correction for finite-height samples (KABlab legacy)
-  - `iterative_d0_refinement`: Iterative d0 refinement until convergence (KABlab legacy)
-- **`"linear"`**: Calculates spring constant using linear fit (F = k * d); always uses 0–max_depth
-
-## Sample Height
-
-Sample height is computed as **\|contact_z - well_bottom_z\|**. Set `well_bottom_z` (default -85 mm) to match your plate geometry. Used for geometry force correction lookup and summary output.
-
-## Batch Analysis (Original KABlab Pipeline)
-
-For analysis using the original batch script pipeline (baseline_threshold contact, geometry correction, iterative d0):
+`main_asmi_2.py` runs the original KABlab Hertzian fit (baseline-threshold contact, geometry correction, iterative `d0` refinement) over an existing run folder:
 
 ```python
 from main_asmi_2 import main
@@ -292,29 +157,31 @@ main(
 )
 ```
 
-- **`main_asmi_2.py`**: Entry point for batch analysis; uses `src/analysis_batch_2.py`
-- **`src/analysis_batch_2.py`**: Original KABlab Hertzian fitting with geometry correction
-- **`src/convert_measurement_format.py`**: Converts Z/Raw_Force/Corrected_Force → well/depth/force
-- Output: `results/plots/<run_folder>/` (heatmap with E, ±std, R² per well)
+- `main_asmi_2.py` — entry point; parameters edited in the `main()` call.
+- `src/analysis_batch_2.py` — original KABlab Hertzian fitting + geometry correction.
+- `src/convert_measurement_format.py` — converts `Z / Raw_Force / Corrected_Force` columns to `well / depth / force`.
 
-## Project Structure
+## Project layout
 
 ```
 ASMI_new/
-├── main_asmi.py              # Main entry point - measure & analyze (src/analysis)
-├── main_asmi_2.py            # Batch analysis entry - original KABlab pipeline
+├── main_asmi.py                # CubOS-driven measurement entry point
+├── main_asmi_2.py              # Legacy batch-analysis entry point
+├── configs/
+│   ├── analysis.yaml           # Run-level settings (wells, fit, paths)
+│   ├── gantry/asmi_gantry.yaml
+│   ├── deck/asmi_deck.yaml
+│   ├── board/asmi_board.yaml
+│   └── protocol/asmi_indentation.yaml
+├── scripts/                    # DB inspection, GRBL helpers, backfill
 ├── src/
-│   ├── CNCController.py      # CNC machine control
-│   ├── ForceSensor.py        # Force sensor interface
-│   ├── ForceMonitoring.py    # Measurement protocols
-│   ├── analysis.py           # Data analysis and fitting (extrapolation, retrospective, etc.)
-│   ├── analysis_batch_2.py   # Original KABlab batch analysis
-│   ├── convert_measurement_format.py  # Format conversion for batch pipeline
-│   └── plot.py               # Visualization functions
-├── cad/                      # CAD files (STEP/STL)
-└── results/                  # Output data and plots
+│   ├── analysis.py             # Analysis pipeline (extrapolation, retrospective, …)
+│   ├── analysis_batch_2.py     # Legacy KABlab batch analysis
+│   ├── convert_measurement_format.py
+│   └── plot.py                 # Visualization
+└── data/                       # SQLite database lives here
 ```
 
 ## License
 
-MIT License - Copyright (c) 2025 Hongrui Zhang
+MIT
