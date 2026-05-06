@@ -2,17 +2,7 @@
 # Core dependencies for CNC control, force sensing, data analysis, and visualization
 
 # CubOS — gantry, instruments, protocol engine, data persistence.
-# Temporarily pinned to an integration branch that combines both open cubos
-# PRs so we can test against both before either lands on staging:
-#   - PR #114 (feature/measure-gantry-injection): `measure` injects gantry
-#     into closed-loop methods (e.g. ASMI.indentation) + measurement_height
-#     parameter + ships deck/labware/definitions data files in the wheel.
-#   - PR #116 (feature/well-depth-mm): `WellPlate.well_depth_mm` (inside
-#     well depth) on the plate object so analysis pipelines can compute
-#     sample thickness from `a1.z - well_depth_mm` instead of a manual
-#     `well_bottom_z` knob.
-# Revert to `@staging` once both PRs are merged.
-cubos @ git+https://github.com/ursa-laboratories/CubOS.git@integration/asmi-test-combined
+cubos @ git+https://github.com/ursa-laboratories/CubOS.git@staging
 
 # Hardware communication
 pyserial>=3.5.0
