@@ -7,8 +7,8 @@ system:
 
 # NOTE: `well_bottom_z` (sample-floor Z used by Hertzian geometry correction)
 # is no longer carried here. It's derived from the plate definition by
-# scripts/analyze_from_db.py: `plate.a1.z - plate.well_depth_mm`. For this to
-# work the deck YAML's plate must declare `well_depth_mm` (the
+# scripts/analyze_from_db.py: `plate.a1.z - plate.well_depth`. For this to
+# work the deck YAML's plate must declare `well_depth` (the
 # `sbs_96_wellplate` registry definition supplies a default of 10.67 mm for
 # standard flat-bottom shallow plates).
 #

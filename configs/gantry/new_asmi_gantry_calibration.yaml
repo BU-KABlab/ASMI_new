@@ -1,7 +1,8 @@
 serial_port: /dev/ttyUSB0
+gantry_type: cub_xl
 cnc:
   homing_strategy: standard
-  total_z_height: 92.0
+  total_z_range: 92.0
   y_axis_motion: head
   # Absolute deck-frame Z used for inter-labware travel and the entry
   # approach to the first well of a scan. Defaults to working_volume.z_max
@@ -32,13 +33,9 @@ instruments:
     offset_x: 0.0
     offset_y: 0.0
     depth: 0.0
-    # Labware-relative offsets (mm above labware.height_mm; negative = below).
-    # The protocol may also set these; if both are set they must match.
-    # 0.0 = exactly at the well-rim (matches the previous absolute setup
-    # where measurement_height tracked deck cal a1.z).
-    measurement_height: 0.0
-    # 3 mm above the well rim for between-wells travel during scans.
-    safe_approach_height: 3.0
+    # Labware-relative motion heights live on the protocol scan/measure
+    # command (`measurement_height`, `interwell_scan_height`,
+    # `indentation_limit_height`).
     force_threshold: -50
     sensor_channels:
     - 1

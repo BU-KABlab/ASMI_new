@@ -27,7 +27,7 @@ from src.analysis import IndentationAnalyzer
 from src.plot import ASMIPlotter
 
 # Cubos deck loader — used to derive `well_bottom_z` from the plate's
-# `well_depth_mm` instead of carrying it as a manual analysis.yaml knob.
+# `well_depth` instead of carrying it as a manual analysis.yaml knob.
 from deck.labware.well_plate import WellPlate
 from deck.loader import load_deck_from_yaml
 
@@ -47,15 +47,15 @@ def unpack_blob(blob: bytes) -> tuple[float, ...]:
 def resolve_well_bottom_z(deck_path: Path) -> float | None:
     """Return the inside well-floor Z (deck-frame) for the first well plate.
 
-    Computed as `a1.z - well_depth_mm`. Returns None if the deck has no
-    well plate, or the plate doesn't declare `well_depth_mm` — caller
+    Computed as `a1.z - well_depth`. Returns None if the deck has no
+    well plate, or the plate doesn't declare `well_depth` — caller
     falls back to the IndentationAnalyzer default in that case.
     """
     deck = load_deck_from_yaml(deck_path)
     for key in deck:
         labware = deck[key]
-        if isinstance(labware, WellPlate) and labware.well_depth_mm is not None:
-            return labware.get_well_center("A1").z - labware.well_depth_mm
+        if isinstance(labware, WellPlate) and labware.well_depth is not None:
+            return labware.get_well_center("A1").z - labware.well_depth
     return None
 
 
@@ -89,13 +89,13 @@ def analyze_campaign(
 
     analysis_cfg = cfg.get("analysis", {})
 
-    # Compute well-floor Z from the plate definition (`a1.z - well_depth_mm`).
-    # Falls back to None when the deck plate doesn't declare `well_depth_mm`,
+    # Compute well-floor Z from the plate definition (`a1.z - well_depth`).
+    # Falls back to None when the deck plate doesn't declare `well_depth`,
     # in which case IndentationAnalyzer's parameter default is used.
     well_bottom_z = resolve_well_bottom_z(deck_path)
     if well_bottom_z is None:
         print(
-            "Warning: deck plate doesn't declare `well_depth_mm`; "
+            "Warning: deck plate doesn't declare `well_depth`; "
             "falling back to IndentationAnalyzer default for well_bottom_z."
         )
 
